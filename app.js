@@ -1,0 +1,1044 @@
+import express from "express";
+import cors from "cors";
+import { User } from "./src/models/User.models.js";
+import { Message } from "./src/models/Message.models.js";
+import { ApiError } from "./src/utils/ApiErrors.js";
+import { ApiResponse } from "./src/utils/ApiResponse.js";
+import { asyncHandler } from "./src/utils/AsynceHandler.js";
+import { VerifyJWT } from "./src/middlewares/Auth.middleware.js";
+import cookieParser from "cookie-parser";
+import bodyParser from "body-parser";
+import { Server } from 'socket.io';
+import { saveMessage } from "./src/models/Message.models.js"
+import { ChatStatus } from "./src/models/ChatStatus.models.js";
+import mongoose from "mongoose";
+import upload from "./src/middlewares/Multer.middleware.js";
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import path from "path";
+import { StockTrade } from "./src/models/StockTrade.models.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const app = express();
+
+const uploadPath = path.join(__dirname, 'uploads');
+
+const allowedOrigins = ['http://localhost:3000', 'http://localhost:5173', 'http://192.168.31.22'];
+
+const corsOptions = {
+    origin: function (origin, callback) {
+        if (allowedOrigins.indexOf(origin) !== -1 || !origin) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
+app.use(cors(corsOptions));
+app.use(express.json({ limit: "16kb" }));
+app.use(express.urlencoded({ extended: true, limit: "16kb" }));
+app.use(express.static("public"));
+app.use(cookieParser());
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
+app.use('/uploads', express.static(uploadPath));
+
+const io = new Server({
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST",],
+        credentials: true,
+    }
+});
+
+let adminSocket = null;
+let chatDeactivationStatus = false; // Initialize a flag to track chat deactivation status
+const userSockets = new Map(); // To store user sockets with their IDs
+
+
+io.on("connection", (socket) => {
+    console.log("User connected", socket.id);
+
+    socket.on("register-admin", () => {
+        adminSocket = socket;
+        console.log("Admin registered:", socket.id);
+    });
+
+    socket.on("register-user", async (userId) => {
+        console.log("Registering user:", userId);
+        userSockets.set(socket.id, { userId, socket });
+        console.log("User registered:", userId, socket.id);
+
+        // Fetch and send the user's chat status
+        try {
+            const user = await User.findById(userId);
+            if (user) {
+                socket.emit("chat-status-changed", { isChatActive: user.isChatActive });
+            }
+        } catch (error) {
+            console.error("Error fetching user chat status:", error);
+        }
+    });
+
+    socket.on("admin-message", async (data) => {
+        console.log("Admin broadcast:", data);
+        socket.broadcast.emit("admin-broadcast", data);
+
+        // Save broadcast message to the database
+        try {
+            const admin = await User.findOne({ role: 'admin' });
+            if (admin) {
+                // Note: No receiver for broadcast message
+                await saveMessage(admin._id, null, data.message, 'broadcast');
+            }
+        } catch (error) {
+            console.error("Error saving broadcast message:", error);
+        }
+    });
+
+    socket.on("admin-private-message", async ({ userId, message, fileUrl }) => {
+        console.log("Admin private message:", userId, message, fileUrl);
+
+        // Find the socket.id for the given userId
+        let userSocketId = null;
+        for (const [socketId, data] of userSockets.entries()) {
+            if (data.userId === userId) {
+                userSocketId = socketId;
+                break;
+            }
+        }
+
+        if (userSocketId) {
+            const userSocketData = userSockets.get(userSocketId);
+            if (userSocketData && userSocketData.socket) {
+                console.log("Emitting to user:", userId, "Socket ID:", userSocketId);
+                userSocketData.socket.emit("admin-private-message", { message, fileUrl });
+
+                // Save private message to the database
+                try {
+                    const user = await User.findOne({ _id: userId });
+                    const admin = await User.findOne({ role: 'admin' });
+                    if (user && admin) {
+                        await saveMessage(admin._id, user._id, message, 'private', fileUrl);
+                    }
+                } catch (error) {
+                    console.error("Error saving private message:", error);
+                }
+            } else {
+                console.log("User socket data not found:", userId, userSocketId);
+            }
+        } else {
+            console.log("User not found:", userId);
+        }
+    });
+
+    socket.on("user-to-admin", async (data) => {
+        console.log("Received user message data:", data);
+
+        let user;
+        try {
+            user = await User.findOne({ _id: data.sender });
+        } catch (error) {
+            console.error("Error finding user:", error);
+        }
+
+        if (!user) {
+            console.log("User not found in database");
+            return;
+        }
+
+        // Check if the user's chat is active
+        if (!user.isChatActive) {
+            console.log("User's chat is deactivated. Message not processed.");
+            // Optionally, you can send a message back to the user informing them that their chat is deactivated
+            const userSocket = userSockets.get(data.sender);
+            if (userSocket) {
+                userSocket.emit("chat-deactivated");
+            }
+            return;
+        }
+
+        if (adminSocket) {
+            console.log("Forwarding message to admin socket:", adminSocket.id);
+            adminSocket.emit("user-to-admin", {
+                ...data,
+                username: user.username
+            });
+        } else {
+            console.log("Admin socket not connected");
+        }
+    });
+
+    socket.on("admin-force-logout", ({ userId }) => {
+        // Find the socket connection for this user
+        const userSocket = userSockets.get(userId);
+
+        if (userSocket && typeof userSocket.emit === 'function') {
+            // Emit a force-logout event to the user
+            userSocket.emit("force-logout");
+        } else {
+            console.error(`Socket for user ${userId} not found or invalid.`);
+        }
+
+        // Invalidate the user's session in your backend (optional)
+    });
+
+
+    socket.on('admin-toggle-user-chat', (data) => {
+        const { userId, isChatActive } = data;
+        io.to(userId).emit('chat-status-update', { isChatActive });
+        console.log(`User ${userId} chat status updated to ${isChatActive}`);
+    });
+
+    socket.on("call-offer", async ({ to, offer, type }) => {
+        console.log(`Received call offer from ${socket.id} to ${to}`);
+
+        let recipientSocket;
+        const admin = await User.findOne({ role: 'admin' });
+
+        if (to === admin._id.toString()) {
+            // Call offer is for admin
+            recipientSocket = adminSocket;
+            console.log("Admin socket:", adminSocket ? adminSocket.id : "Admin not connected");
+        } else {
+            // Call offer is for a user
+            const userSocketEntry = Array.from(userSockets.entries()).find(([_, data]) => data.userId === to);
+            recipientSocket = userSocketEntry ? userSocketEntry[1].socket : null;
+            console.log(`User socket: ${recipientSocket ? recipientSocket.id : 'User not connected'}`);
+        }
+
+        if (recipientSocket) {
+            recipientSocket.emit("call-offer", { from: socket.id, offer, type });
+            console.log(`Sent call offer to ${to} (socket id: ${recipientSocket.id})`);
+        } else {
+            console.log(`Recipient ${to} not found or not connected`);
+        }
+
+        socket.callEnded = false;
+    });
+
+
+    socket.on("call-answer", async ({ to, answer }) => {
+        console.log(`Received call-answer from ${socket.id} for ${to}`);
+
+        let recipientSocket;
+
+        try {
+            // Find the admin
+            const admin = await User.findOne({ role: 'admin' });
+
+            // Check if the recipient is the admin or a user
+            if (to === adminSocket.id) {
+                recipientSocket = adminSocket;
+                console.log("Recipient is admin. Admin socket:", adminSocket ? adminSocket.id : "Admin not connected");
+            } else {
+                const userSocketEntry = Array.from(userSockets.entries()).find(([id, _]) => id === to);
+                recipientSocket = userSocketEntry ? userSocketEntry[1].socket : null;
+                console.log(`Recipient is user. User socket: ${recipientSocket ? recipientSocket.id : 'User not connected'}`);
+            }
+
+            console.log('Current userSockets:', Array.from(userSockets.keys()));
+
+            // Send the answer if recipientSocket is found
+            if (recipientSocket) {
+                console.log(`Sending call-answer to ${to} (socket id: ${recipientSocket.id})`);
+                recipientSocket.emit("call-answer", { from: socket.id, answer });
+            } else {
+                console.log(`Recipient ${to} not found or not connected`);
+            }
+        } catch (error) {
+            console.error("Error in call-answer:", error);
+        }
+    });
+
+    socket.on("ice-candidate", async ({ to, candidate }) => {
+        let recipientSocket;
+        const admin = await User.findOne({ role: 'admin' });
+
+        if (to === admin._id.toString()) {
+            recipientSocket = adminSocket;
+        } else {
+            const userSocketEntry = Array.from(userSockets.entries()).find(([id, _]) => id === to);
+            recipientSocket = userSocketEntry ? userSocketEntry[1].socket : null;
+        }
+
+        if (recipientSocket) {
+            recipientSocket.emit("ice-candidate", { from: socket.id, candidate });
+        } else {
+            console.log(`Recipient ${to} not found or not connected`);
+        }
+    });
+
+    socket.on("end-call", async ({ to }) => {
+        console.log("Ending call", new Date().toISOString()); // Log the time of ending the call
+        let recipientSocket;
+
+        // Cache admin's information or retrieve once
+        const admin = await User.findOne({ role: 'admin' });
+
+        if (to === admin._id.toString()) {
+            recipientSocket = adminSocket;
+        } else {
+            for (const [socketId, userData] of userSockets) {
+                if (userData.userId === to) {
+                    recipientSocket = userData.socket;
+                    break;
+                }
+            }
+        }
+
+        // Ensure the recipient exists and the call hasn't already ended
+        if (recipientSocket && !socket.callEnded) {
+            socket.callEnded = true; // Set the flag to true when ending the call
+            recipientSocket.emit("end-call", { from: socket.id });
+            console.log("Call ended successfully", new Date().toISOString());
+
+            // Optionally, clear the flag after a brief timeout to avoid delays or issues
+            setTimeout(() => {
+                socket.callEnded = false; // Reset the flag after 1 second
+            }, 1000);
+        } else if (!recipientSocket) {
+            console.log(`Recipient ${to} not found or not connected`);
+        } else {
+            console.log("Call already ended");
+        }
+    });
+
+
+    socket.on("call-rejected", async ({ to }) => {
+        console.log(`Call rejected by ${socket.id}`);
+        let recipientSocket;
+        const admin = await User.findOne({ role: 'admin' });
+
+        if (to === admin._id.toString()) {
+            // Call rejection is for admin
+            recipientSocket = adminSocket;
+
+
+        } else {
+            // Call rejection is for a user
+            recipientSocket = socket;
+        }
+
+        if (recipientSocket) {
+            recipientSocket.emit("call-rejected", { from: socket.id });
+            console.log(`Sent call rejection to ${to}`);
+
+            // Also end the call for the rejecting user
+            socket.emit("end-call", { from: to });
+        } else {
+            console.log(`Recipient ${to} not found or not connected`);
+        }
+    });
+
+    socket.on("disconnect", () => {
+        if (socket === adminSocket) {
+            adminSocket = null;
+            console.log("Admin disconnected", socket.id);
+        } else {
+            for (const [userId, userData] of userSockets.entries()) {
+                if (userData.socket === socket) {
+                    userSockets.delete(userId);
+                    console.log("User disconnected:", userId, socket.id);
+                    break;
+                }
+            }
+        }
+    });
+
+});
+
+app.get("/", (req, res) => {
+    res.send("Express app is running");
+});
+
+const generateAccessAndRefreshTokens = async (userId) => {
+    try {
+        const user = await User.findById(userId);
+        const accessToken = user.generateAccessToken();
+        const refreshToken = user.generateRefreshToken();
+
+        user.refreshToken = refreshToken;
+        await user.save({ validateBeforeSave: false });
+
+        return { accessToken, refreshToken };
+    } catch (error) {
+        throw new ApiError(500, "Something went wrong while generating refresh and access token");
+    }
+};
+
+app.post("/signup", async (req, res) => {
+    const { email, username, phoneNumber, password, confirmPassword } = req.body;
+
+    const lowerCaseEmail = email.toLowerCase();
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s]+$/;
+    if (!emailRegex.test(lowerCaseEmail)) {
+        throw new ApiError(400, "Invalid email format");
+    }
+
+    let check = await User.findOne({ email: lowerCaseEmail });
+    if (check) {
+        throw new ApiError(400, "Email already exists");
+    }
+
+    if (password !== confirmPassword) {
+        throw new ApiError(400, "Passwords do not match");
+    }
+
+    const user = new User({
+        username: username,
+        email: lowerCaseEmail,
+        password: password,
+        phoneNumber: phoneNumber
+    });
+
+    const savedUser = await user.save();
+
+    if (!savedUser) {
+        throw new ApiError(400, "User registration failed");
+    } else {
+        res.status(200).json(new ApiResponse(200, "User added successfully"));
+    }
+});
+
+app.post("/login", async (req, res) => {
+    const { email, phoneNumber, password } = req.body;
+
+    try {
+        let user;
+
+        if (email) {
+            const lowerCaseEmail = email.toLowerCase();
+            user = await User.findOne({ email: lowerCaseEmail });
+        } else if (phoneNumber) {
+            user = await User.findOne({ phoneNumber: phoneNumber });
+        } else {
+            throw new ApiError(400, "Please provide either email or phone number");
+        }
+
+        if (!user) {
+            throw new ApiError(401, "Invalid credentials");
+        }
+
+        if (!user.isActive) {
+            throw new ApiError(403, "Your account has been deactivated. Please contact support.");
+        }
+
+        const isPasswordValid = await user.isPasswordCorrect(password);
+
+        if (!isPasswordValid) {
+            throw new ApiError(401, "Invalid Password");
+        }
+
+        const tokens = await generateAccessAndRefreshTokens(user._id);
+        console.log("Generated tokens:", tokens); // Debug log
+
+        const { accessToken, refreshToken } = tokens;
+
+        console.log("Access Token:", accessToken); // Debug log
+        console.log("Refresh Token:", refreshToken); // Debug log
+
+        const loggedInUser = await User.findById(user._id).select("-password -refreshToken");
+
+        const response = new ApiResponse(
+            200,
+            { user: loggedInUser, accessToken, refreshToken },
+            "User logged in successfully"
+        );
+        console.log("API Response:", response); // Debug log
+
+        return res
+            .status(200)
+            .cookie("accessToken", accessToken)
+            .cookie("refreshToken", refreshToken) // 7 days
+            .json(new ApiResponse(
+                200,
+                { user: loggedInUser, accessToken, refreshToken },
+                "user logged in successfully"
+            ));
+    } catch (error) {
+        console.error(error);
+        if (error instanceof ApiError) {
+            return res.status(error.statusCode).json(new ApiResponse(error.statusCode, null, error.message));
+        }
+        return res.status(500).json(new ApiResponse(500, null, "Internal Server Error"));
+    }
+});
+
+// File upload endpoint
+app.post('/api/upload', upload.single('attachment'), (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+        const fileUrl = `/uploads/${req.file.filename}`;
+        res.json({ fileUrl });
+    } catch (error) {
+        console.error('Error uploading file:', error);
+        res.status(500).json({ error: 'Failed to upload file' });
+    }
+});
+
+app.get("/users", asyncHandler(async (req, res) => {
+    try {
+        const users = await User.find({}).select("email phoneNumber username isActive");
+        res.status(200).json({
+            status: "success",
+            data: users
+        });
+    } catch (error) {
+        console.error("Error fetching users:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error fetching users"
+        });
+    }
+}));
+
+app.get("/users/:userId", asyncHandler(async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const user = await User.findById(userId).select("email phoneNumber username isActive");
+
+        if (!user) {
+            return res.status(404).json({
+                status: "error",
+                message: "User not found"
+            });
+        }
+
+        res.status(200).json({
+            status: "success",
+            data: user
+        });
+    } catch (error) {
+        console.error("Error fetching user:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error fetching user"
+        });
+    }
+}));
+
+app.put("/users/:userId/status", asyncHandler(async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { isActive } = req.body;
+
+        const updatedUser = await User.findByIdAndUpdate(
+            userId,
+            { isActive },
+            { new: true, select: "email phoneNumber username isActive" }
+        );
+
+        if (!updatedUser) {
+            return res.status(404).json({
+                status: "error",
+                message: "User not found"
+            });
+        }
+
+        res.status(200).json({
+            status: "success",
+            message: "User status updated successfully",
+            data: updatedUser
+        });
+    } catch (error) {
+        console.error("Error updating user status:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error updating user status"
+        });
+    }
+}));
+
+app.post("/logout", VerifyJWT, asyncHandler(async (req, res) => {
+    await User.findByIdAndUpdate(
+        req.user._id,
+        {
+            $unset: { refreshToken: 1 }
+        },
+        { new: true }
+    );
+
+    const options = {
+        httpOnly: true,
+        secure: true
+    };
+
+    res
+        .status(200)
+        .clearCookie("accessToken", options)
+        .clearCookie("refreshToken", options)
+        .json(new ApiResponse(200, {}, "User logged out"));
+}));
+
+app.post('/api/create-admin', async (req, res) => {
+    try {
+        const admin = new User({ isAdmin: true, ...req.body });
+        await admin.save();
+        res.status(201).json({ message: 'Admin created successfully' });
+    } catch (error) {
+        console.error('Error creating admin:', error);
+        res.status(500).json({ error: 'Failed to create admin' });
+    }
+});
+
+app.get("/api/chat-history", async (req, res) => {
+    try {
+        const admin = await User.findOne({ role: "admin" });
+        if (!admin) {
+            return res.status(404).json({ message: "Admin not found" });
+        }
+
+        const messages = await Message.find({
+            $or: [
+                { sender: admin._id },
+                { receiver: admin._id }
+            ]
+        }).sort({ timestamp: 1 });
+
+        res.json(messages);
+    } catch (error) {
+        console.error("Error fetching chat history:", error);
+        res.status(500).json({ message: "Error fetching chat history" });
+    }
+});
+
+app.post('/api/messages', async (req, res) => {
+    console.log("Received message saving request:", req.body);
+    try {
+        const { sender, receiver, text, messageType, fileUrl } = req.body;
+
+        // Validate ObjectIds for private messages
+        if (messageType === 'private') {
+            if (!mongoose.Types.ObjectId.isValid(sender) || !mongoose.Types.ObjectId.isValid(receiver)) {
+                console.log("Invalid sender or receiver ID");
+                return res.status(400).json({ error: 'Invalid sender or receiver ID' });
+            }
+        }
+
+        // For broadcast messages, receiver must be null
+        if (messageType === 'broadcast' && receiver !== null) {
+            console.log("Broadcast message should have null receiver");
+            return res.status(400).json({ error: 'Broadcast message should have null receiver' });
+        }
+
+        // Validate messageType
+        if (!['broadcast', 'private'].includes(messageType)) {
+            console.log("Invalid message type");
+            return res.status(400).json({ error: 'Invalid message type' });
+        }
+
+        const savedMessage = await saveMessage(sender, receiver, text, messageType, fileUrl);
+        console.log("Message saved successfully:", savedMessage);
+        res.status(201).json({ message: 'Message saved successfully', data: savedMessage });
+    } catch (error) {
+        console.error('Error saving message:', error);
+        res.status(500).json({ error: 'Failed to save message', details: error.message });
+    }
+});
+
+// Fetch broadcast messages
+app.get("/api/chat-history/broadcast", async (req, res) => {
+    try {
+        const messages = await Message.find({ messageType: 'broadcast' }).sort({ timestamp: 1 });
+        res.json(messages);
+    } catch (error) {
+        console.error("Error fetching broadcast chat history:", error);
+        res.status(500).json({ message: "Error fetching broadcast chat history" });
+    }
+});
+
+// Fetch private messages for a specific user
+app.get("/api/chat-history/private/:userId", async (req, res) => {
+    const { userId } = req.params;
+    try {
+        // Ensure that userId is valid
+        if (!userId) {
+            return res.status(400).json({ message: "Invalid user ID" });
+        }
+
+        // Find the admin user
+        const admin = await User.findOne({ role: "admin" });
+        if (!admin) {
+            return res.status(404).json({ message: "Admin not found" });
+        }
+
+        // Fetch messages between the user and admin
+        const messages = await Message.find({
+            $or: [
+                { sender: userId, receiver: admin._id },
+                { sender: admin._id, receiver: userId }
+            ],
+            messageType: 'private'
+        }).sort({ timestamp: 1 });
+
+        // Return messages
+        res.json(messages);
+    } catch (error) {
+        console.error("Error fetching private chat history:", error);
+        res.status(500).json({ message: "Error fetching private chat history" });
+    }
+});
+
+app.delete("/api/chat-history/broadcast", async (req, res) => {
+    try {
+        const result = await Message.deleteMany({ messageType: 'broadcast' });
+        console.log(`Deleted ${result.deletedCount} broadcast messages`);
+        res.status(200).json({ message: "Broadcast chat history deleted", deletedCount: result.deletedCount });
+    } catch (error) {
+        console.error("Error deleting broadcast chat history:", error);
+        res.status(500).json({ message: "Error deleting broadcast chat history" });
+    }
+});
+
+// Delete private messages for a specific user
+app.delete("/api/chat-history/private/:userId", async (req, res) => {
+    const { userId } = req.params;
+    try {
+        const admin = await User.findOne({ role: "admin" });
+        if (!admin) {
+            return res.status(404).json({ message: "Admin not found" });
+        }
+
+        await Message.deleteMany({
+            $or: [
+                { sender: userId, receiver: admin._id },
+                { sender: admin._id, receiver: userId }
+            ],
+            messageType: 'private'
+        });
+
+        res.status(200).json({ message: "Private chat history deleted for the specified user" });
+    } catch (error) {
+        console.error("Error deleting private chat history:", error);
+        res.status(500).json({ message: "Error deleting private chat history" });
+    }
+});
+
+// Endpoint to toggle chat status
+app.post('/api/toggle-chats', async (req, res) => {
+    const { isDeactivated } = req.body;
+
+    try {
+        // Update chat status in the database
+        await ChatStatus.findOneAndUpdate({}, { isDeactivated }, { upsert: true });
+        io.emit('chat-deactivation-status', { isDeactivated }); // Notify all connected users
+        res.status(200).send({ message: isDeactivated ? "All chats have been deactivated" : "All chats have been reactivated" });
+    } catch (error) {
+        console.error("Error toggling chats:", error);
+        res.status(500).send({ error: isDeactivated ? "Failed to deactivate chats" : "Failed to reactivate chats" });
+    }
+});
+
+// Endpoint to get chat deactivation status
+app.get('/api/chat-deactivation-status', async (req, res) => {
+    try {
+        const status = await ChatStatus.findOne({});
+        res.status(200).send({ isDeactivated: status ? status.isDeactivated : false });
+    } catch (error) {
+        console.error("Error fetching chat deactivation status:", error);
+        res.status(500).send({ error: "Failed to fetch chat deactivation status" });
+    }
+});
+
+// Endpoint to toggle user chat status
+app.put('/api/toggle-user-chat/:userId', async (req, res) => {
+    const { userId } = req.params;
+    const { isChatActive } = req.body;
+
+    try {
+        // Update chat status in the database
+        await User.findByIdAndUpdate(userId, { isChatActive });
+
+        // Notify connected clients
+        io.emit('admin-toggle-user-chat', { userId, isChatActive });
+
+        res.status(200).send({ message: isChatActive ? "Chat reactivated" : "Chat deactivated" });
+    } catch (error) {
+        console.error("Error toggling user chat status:", error);
+        res.status(500).send({ error: "Failed to toggle user chat status" });
+    }
+});
+
+app.put('/users/:userId/status', async (req, res) => {
+    const { userId } = req.params;
+    const { isActive } = req.body;
+
+    try {
+        // Validate isActive is a boolean
+        if (typeof isActive !== 'boolean') {
+            return res.status(400).send({ error: "isActive must be a boolean" });
+        }
+
+        // Update the user's status in the database
+        const user = await User.findByIdAndUpdate(userId, { isActive }, { new: true });
+
+        if (!user) {
+            return res.status(404).send({ error: "User not found" });
+        }
+
+        // Notify all connected clients about the status change
+        io.emit('admin-toggle-user-status', { userId, isActive });
+
+        res.status(200).send({ message: isActive ? "User reactivated" : "User deactivated" });
+    } catch (error) {
+        console.error("Error toggling user status:", error);
+        res.status(500).send({ error: "Failed to toggle user status" });
+    }
+});
+
+// stock data 
+app.post('/calculate', async (req, res) => {
+    const { userId, strikeName, quantity, buyPrice, sellPrice, charges, brokerage } = req.body;
+
+    // Convert values to numbers
+    const buy = parseFloat(buyPrice);
+    const sell = parseFloat(sellPrice);
+    const qty = parseFloat(quantity);
+    const charge = parseFloat(charges);
+    const broker = parseFloat(brokerage);
+
+    // Calculate total cost, revenue, and net profit/loss
+    const totalCost = (buy * qty) + charge + broker;
+    const totalRevenue = sell * qty;
+    const netProfitLoss = totalRevenue - totalCost;
+
+    // Prepare the result object
+    const result = {
+        userId, // Include userId in the result
+        strikeName,
+        quantity: qty,
+        buyPrice: buy,
+        sellPrice: sell,
+        charges: charge,
+        brokerage: broker,
+        profit: null,
+        loss: null,
+    };
+
+    // Determine if it's a profit or loss
+    if (netProfitLoss > 0) {
+        result.profit = netProfitLoss;
+    } else {
+        result.loss = Math.abs(netProfitLoss);
+    }
+
+    // Save the result to the database
+    try {
+        // Create and save the stock trade
+        const stockTrade = new StockTrade(result);
+        const savedTrade = await stockTrade.save();
+
+        // Update the user's trade list
+        await User.findByIdAndUpdate(userId, { $push: { trades: savedTrade._id } });
+
+        // Respond with the result
+        res.status(201).json(result);
+    } catch (error) {
+        console.error('Error saving to database:', error);
+        res.status(500).json({ error: 'Error saving to database' });
+    }
+});
+
+app.get('/trades', async (req, res) => {
+    try {
+        const trades = await StockTrade.find();
+        res.json(trades);
+    } catch (error) {
+        console.error('Error fetching trades:', error);
+        res.status(500).json({ error: 'Error fetching trades' });
+    }
+});
+
+app.get('/userTrades/:userId', async (req, res) => {
+    const { userId } = req.params;
+
+    try {
+        const trades = await StockTrade.find({ userId });
+        res.json(trades);
+    } catch (error) {
+        console.error('Error fetching trades:', error);
+        res.status(500).json({ error: 'Error fetching trades' });
+    }
+});
+
+// PUT endpoint to update a trade
+app.put('/userTrades/:userId', async (req, res) => {
+    const { userId } = req.params;
+    const { strikeName, quantity, buyPrice, sellPrice, charges, brokerage, profit, loss } = req.body;
+
+    try {
+        // Find the trade by ID and update it
+        const updatedTrade = await StockTrade.findByIdAndUpdate(
+            userId,
+            { strikeName, quantity, buyPrice, sellPrice, charges, brokerage, profit, loss },
+            { new: true, runValidators: true } // Return the updated document and validate input
+        );
+
+        if (!updatedTrade) {
+            return res.status(404).json({ error: 'Trade not found' });
+        }
+
+        res.json(updatedTrade);
+    } catch (error) {
+        console.error('Error updating trade:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+app.get('/allUserTrades', async (req, res) => {
+    try {
+        const usersWithTrades = await User.find({})
+            .populate({
+                path: 'trades',
+                select: 'strikeName quantity buyPrice sellPrice charges brokerage profit loss createdAt' // Select fields to display
+            })
+            .select('username email phoneNumber trades');
+
+        res.status(200).json({
+            status: "success",
+            data: usersWithTrades
+        });
+    } catch (error) {
+        console.error('Error fetching users with trades:', error);
+        res.status(500).json({ error: 'Error fetching users with trades' });
+    }
+});
+
+app.put('/updateDailyCharges', async (req, res) => {
+    const { userId, date, charges } = req.body;
+
+    try {
+        // Find all trades for the user on the specified date
+        const trades = await StockTrade.find({
+            userId,
+            createdAt: {
+                $gte: new Date(date),
+                $lt: new Date(date).setDate(new Date(date).getDate() + 1)
+            }
+        });
+
+        if (trades.length === 0) {
+            return res.status(404).json({ error: 'No trades found for the specified date' });
+        }
+
+        // Check if daily charges have already been updated
+        if (trades.some(trade => trade.dailyChargesUpdated)) {
+            return res.status(400).json({ error: 'Daily charges have already been updated for this date' });
+        }
+
+        // Calculate the charges per trade
+        const chargesPerTrade = parseFloat(charges) / trades.length;
+
+        // Update each trade with the new charges, recalculate profit/loss, and mark as updated
+        const updatedTrades = await Promise.all(trades.map(async (trade) => {
+            const newCharges = chargesPerTrade;
+            const totalCost = (trade.buyPrice * trade.quantity) + newCharges + trade.brokerage;
+            const totalRevenue = trade.sellPrice * trade.quantity;
+            const netProfitLoss = totalRevenue - totalCost;
+
+            const updatedTrade = await StockTrade.findByIdAndUpdate(
+                trade._id,
+                {
+                    charges: newCharges,
+                    profit: netProfitLoss > 0 ? netProfitLoss : 0,
+                    loss: netProfitLoss < 0 ? Math.abs(netProfitLoss) : 0,
+                    dailyChargesUpdated: true
+                },
+                { new: true }
+            );
+
+            return updatedTrade;
+        }));
+
+        // Fetch all updated trades for the user
+        const allUpdatedTrades = await StockTrade.find({ userId });
+
+        res.json(allUpdatedTrades);
+    } catch (error) {
+        console.error('Error updating daily charges:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+app.put('/updateDailyChargesForAllUsers', async (req, res) => {
+    const { date, charges } = req.body;
+
+    // Input validation
+    if (!date || isNaN(Date.parse(date)) || isNaN(parseFloat(charges))) {
+        return res.status(400).json({ error: 'Valid date and numeric charges are required' });
+    }
+
+    try {
+        // Parse date and set time boundaries for the day
+        const startOfDay = new Date(date);
+        const endOfDay = new Date(startOfDay);
+        endOfDay.setDate(startOfDay.getDate() + 1);
+
+        // Find all trades on the specified date
+        const trades = await StockTrade.find({
+            createdAt: {
+                $gte: startOfDay,
+                $lt: endOfDay
+            }
+        });
+
+        if (trades.length === 0) {
+            return res.status(404).json({ error: 'No trades found for the specified date' });
+        }
+
+        // Calculate charges per trade
+        const totalTrades = trades.length;
+        const chargesPerTrade = parseFloat(charges) / totalTrades;
+
+        // Update each trade with the new charges and recalculate profit/loss
+        const updatedTrades = await Promise.all(trades.map(async (trade) => {
+            const newCharges = chargesPerTrade;
+            const totalCost = (trade.buyPrice * trade.quantity) + newCharges + trade.brokerage;
+            const totalRevenue = trade.sellPrice * trade.quantity;
+            const netProfitLoss = totalRevenue - totalCost;
+
+            const updatedTrade = await StockTrade.findByIdAndUpdate(
+                trade._id,
+                {
+                    charges: newCharges,
+                    profit: netProfitLoss > 0 ? netProfitLoss : 0,
+                    loss: netProfitLoss < 0 ? Math.abs(netProfitLoss) : 0,
+                    dailyChargesUpdated: true // Mark as updated
+                },
+                { new: true }
+            );
+
+            return updatedTrade;
+        }));
+
+        // Fetch all updated trades
+        const allUpdatedTrades = await StockTrade.find({
+            createdAt: {
+                $gte: startOfDay,
+                $lt: endOfDay
+            }
+        });
+
+        res.status(200).json({
+            status: "success",
+            message: `Updated charges for ${allUpdatedTrades.length} trades on ${date}`,
+            data: allUpdatedTrades
+        });
+    } catch (error) {
+        console.error('Error updating daily charges for all users:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+
+export { app, io };
