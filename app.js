@@ -223,7 +223,6 @@ io.on("connection", (socket) => {
         socket.callEnded = false;
     });
 
-
     socket.on("call-answer", async ({ to, answer }) => {
         console.log(`Received call-answer from ${socket.id} for ${to}`);
 
@@ -334,6 +333,90 @@ io.on("connection", (socket) => {
             socket.emit("end-call", { from: to });
         } else {
             console.log(`Recipient ${to} not found or not connected`);
+        }
+    });
+
+    socket.on("broadcast-call-offer", async ({ offer, type }) => {
+        console.log(`Received broadcast call offer from admin ${socket.id}`);
+
+        const admin = await User.findOne({ role: 'admin' });
+        if (socket.id !== adminSocket.id) {
+            console.log("Unauthorized: Only admin can initiate broadcast calls");
+            return;
+        }
+
+        // Get all connected user sockets
+        const connectedUsers = Array.from(userSockets.values());
+
+        // Send the call offer to all connected users
+        connectedUsers.forEach(userData => {
+            userData.socket.emit("call-offer", { from: admin._id.toString(), offer, type, isBroadcast: true });
+            console.log(`Sent broadcast call offer to user ${userData.userId}`);
+        });
+
+        socket.broadcastCallActive = true;
+    });
+
+    // Handle broadcast call answers
+    socket.on("broadcast-call-answer", async ({ answer }) => {
+        console.log(`Received broadcast call answer from user ${socket.id}`);
+
+        const admin = await User.findOne({ role: 'admin' });
+
+        if (adminSocket) {
+            adminSocket.emit("broadcast-call-answer", { from: socket.id, answer });
+            console.log(`Sent broadcast call answer to admin`);
+        } else {
+            console.log("Admin not connected");
+        }
+    });
+
+    // Handle broadcast ICE candidates
+    socket.on("broadcast-ice-candidate", async ({ candidate }) => {
+        console.log(`Received broadcast ICE candidate from ${socket.id}`);
+
+        const admin = await User.findOne({ role: 'admin' });
+
+        if (socket.id === adminSocket.id) {
+            // Admin is sending ICE candidate to all users
+            userSockets.forEach((userData, socketId) => {
+                userData.socket.emit("ice-candidate", { from: admin._id.toString(), candidate, isBroadcast: true });
+            });
+        } else {
+            // User is sending ICE candidate to admin
+            if (adminSocket) {
+                adminSocket.emit("broadcast-ice-candidate", { from: socket.id, candidate });
+            } else {
+                console.log("Admin not connected");
+            }
+        }
+    });
+
+    // End broadcast call
+    socket.on("end-broadcast-call", async () => {
+        console.log(`Ending broadcast call from ${socket.id}`);
+
+        const admin = await User.findOne({ role: 'admin' });
+
+        if (socket.id !== adminSocket.id) {
+            console.log("Unauthorized: Only admin can end broadcast calls");
+            return;
+        }
+
+        userSockets.forEach((userData, socketId) => {
+            userData.socket.emit("end-call", { from: admin._id.toString(), isBroadcast: true });
+        });
+
+        socket.broadcastCallActive = false;
+        console.log("Broadcast call ended successfully");
+    });
+
+    // Handle user leaving broadcast call
+    socket.on("leave-broadcast-call", async () => {
+        console.log(`User ${socket.id} leaving broadcast call`);
+
+        if (adminSocket) {
+            adminSocket.emit("user-left-broadcast-call", { userId: socket.id });
         }
     });
 
