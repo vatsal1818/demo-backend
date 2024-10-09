@@ -420,6 +420,24 @@ io.on("connection", (socket) => {
         }
     });
 
+    socket.on('request-user-socket-ids', async (userIds) => {
+        console.log('Received request for user socket IDs:', userIds);
+
+        const socketIds = {};
+
+        // Iterate through the userSockets Map to find socket IDs for the requested user IDs
+        userSockets.forEach((userData, socketId) => {
+            if (userIds.includes(userData.userId)) {
+                socketIds[userData.userId] = socketId;
+            }
+        });
+
+        console.log('Sending socket IDs:', socketIds);
+
+        // Send the socket IDs back to the client
+        socket.emit('user-socket-ids', socketIds);
+    });
+
     socket.on("disconnect", () => {
         if (socket === adminSocket) {
             adminSocket = null;
