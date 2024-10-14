@@ -350,7 +350,7 @@ io.on("connection", (socket) => {
 
         // Send the call offer to all connected users
         connectedUsers.forEach(userData => {
-            userData.socket.emit("call-offer", { from: admin._id.toString(), offer, type, isBroadcast: true });
+            userData.socket.emit("broadcast-call-offer", { from: admin._id.toString(), offer, type, isBroadcast: true });
             console.log(`Sent broadcast call offer to user ${userData.userId}`);
         });
 
