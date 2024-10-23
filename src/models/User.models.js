@@ -49,7 +49,11 @@ const userSchema = new Schema(
                 type: mongoose.Schema.Types.ObjectId,
                 ref: "StockTrade"
             }
-        ]
+        ],
+        purchasedCourses: [{
+            courseId: { type: mongoose.Schema.Types.ObjectId, ref: 'Course' },
+            progress: { type: Number, default: 0 }  // To track progress
+        }]
     },
     { timestamps: true }
 );

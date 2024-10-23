@@ -17,6 +17,10 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import path from "path";
 import { StockTrade } from "./src/models/StockTrade.models.js";
+import { Course } from "./src/models/Course.models.js";
+import { uploadOnCloudinary } from "./src/Cloudinary/Cloudinary.js";
+import cloudinary from "cloudinary"
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -1140,6 +1144,371 @@ app.put('/updateDailyChargesForAllUsers', async (req, res) => {
         res.status(500).json({ error: 'Internal server error' });
     }
 });
+
+// courses
+
+app.post("/api/courses", async (req, res) => {
+    try {
+        const { courseName, price } = req.body;
+
+        const admin = await User.findOne({ role: 'admin' });
+        if (!admin) {
+            return res.status(403).json({
+                status: "error",
+                message: "Unauthorized access"
+            });
+        }
+
+        if (!courseName || !price) {
+            return res.status(400).json({
+                status: "error",
+                message: "Course name and price are required"
+            });
+        }
+
+        if (isNaN(price) || parseFloat(price) < 0) {
+            return res.status(400).json({
+                status: "error",
+                message: "Invalid price format"
+            });
+        }
+
+        const course = new Course({
+            courseName,
+            price: parseFloat(price),
+            createdBy: admin,
+            status: 'draft',
+            content: []
+        });
+
+        const savedCourse = await course.save();
+
+        res.status(201).json({
+            status: "success",
+            data: savedCourse,
+            courseId: course._id,
+            message: "Course created successfully"
+        });
+
+    } catch (error) {
+        console.error("Error creating course:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error creating course"
+        });
+    }
+});
+
+app.post("/api/courses/:courseId/content",
+    upload.fields([
+        { name: 'thumbnail', maxCount: 1 },
+        { name: 'video', maxCount: 1 }
+    ]),
+    async (req, res) => {
+        try {
+            const { courseId } = req.params;
+            const { title, description } = req.body;
+
+            const admin = await User.findOne({ role: 'admin' });
+            if (!admin) {
+                return res.status(403).json({
+                    status: "error",
+                    message: "Unauthorized access"
+                });
+            }
+
+            const course = await Course.findById(courseId);
+            if (!course) {
+                return res.status(404).json({
+                    status: "error",
+                    message: "Course not found"
+                });
+            }
+
+            // Upload files to Cloudinary
+            let thumbnailUrl, videoUrl;
+            try {
+                // Extract just the secure_url from the Cloudinary response
+                const thumbnailResponse = req.files.thumbnail && req.files.thumbnail.length > 0
+                    ? await uploadOnCloudinary(req.files.thumbnail[0])
+                    : undefined;
+                thumbnailUrl = thumbnailResponse?.secure_url;
+
+                const videoResponse = req.files.video && req.files.video.length > 0
+                    ? await uploadOnCloudinary(req.files.video[0])
+                    : undefined;
+                videoUrl = videoResponse?.secure_url;
+
+                if (!thumbnailUrl || !videoUrl) {
+                    return res.status(400).json({
+                        status: "error",
+                        message: "Both thumbnail and video are required"
+                    });
+                }
+            } catch (uploadError) {
+                console.error("Error uploading files to Cloudinary:", uploadError);
+                return res.status(500).json({
+                    status: "error",
+                    message: "Error uploading files to Cloudinary",
+                    error: uploadError.message
+                });
+            }
+
+            const newContent = {
+                title,
+                description,
+                thumbnailUrl,  // Now this will be just the URL string
+                videoUrl,      // Now this will be just the URL string
+            };
+
+            // Ensure content array is initialized before pushing
+            if (!course.content) course.content = [];
+            course.content.push(newContent);
+            course.status = 'published';
+
+            await course.save();
+
+            res.status(201).json({
+                status: "success",
+                data: course,
+                message: "Course content added successfully"
+            });
+
+        } catch (error) {
+            console.error("Error adding course content:", error);
+            res.status(500).json({
+                status: "error",
+                message: "Error adding course content",
+                error: error.message
+            });
+        }
+    }
+);
+
+// Get all courses
+app.get("/api/courses", async (req, res) => {
+    try {
+        const courses = await Course.find()
+            .select('courseName price status')
+            .sort({ createdAt: -1 });
+
+        res.status(200).json({
+            status: "success",
+            data: courses
+        });
+    } catch (error) {
+        console.error("Error fetching courses:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error fetching courses"
+        });
+    }
+});
+
+app.get("/api/courses/:courseId", async (req, res) => {
+    try {
+        const course = await Course.findById(req.params.courseId);
+
+        if (!course) {
+            return res.status(404).json({
+                status: "error",
+                message: "Course not found"
+            });
+        }
+
+        res.status(200).json({
+            status: "success",
+            data: course,
+            message: "Course details retrieved successfully"
+        });
+    } catch (error) {
+        console.error("Error fetching course details:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error fetching course details"
+        });
+    }
+});
+
+app.put("/api/courses/:courseId", async (req, res) => {
+    try {
+        const { courseId } = req.params;
+        const { courseName, price } = req.body;
+
+        // Validate admin access
+        const admin = await User.findOne({ role: 'admin' });
+        if (!admin) {
+            return res.status(403).json({
+                status: "error",
+                message: "Unauthorized access"
+            });
+        }
+
+        // Input validation
+        if (!courseName || !price) {
+            return res.status(400).json({
+                status: "error",
+                message: "Course name and price are required"
+            });
+        }
+
+        if (isNaN(price) || parseFloat(price) < 0) {
+            return res.status(400).json({
+                status: "error",
+                message: "Invalid price format"
+            });
+        }
+
+        // Update course
+        const updatedCourse = await Course.findByIdAndUpdate(
+            courseId,
+            {
+                courseName,
+                price: parseFloat(price)
+            },
+            { new: true }
+        );
+
+        if (!updatedCourse) {
+            return res.status(404).json({
+                status: "error",
+                message: "Course not found"
+            });
+        }
+
+        res.status(200).json({
+            status: "success",
+            data: updatedCourse,
+            message: "Course updated successfully"
+        });
+
+    } catch (error) {
+        console.error("Error updating course:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error updating course"
+        });
+    }
+});
+
+// Delete entire course
+app.delete("/api/courses/:courseId", async (req, res) => {
+    try {
+        const { courseId } = req.params;
+
+        // Validate admin access
+        const admin = await User.findOne({ role: 'admin' });
+        if (!admin) {
+            return res.status(403).json({
+                status: "error",
+                message: "Unauthorized access"
+            });
+        }
+
+        // Find the course first to get its content
+        const course = await Course.findById(courseId);
+        if (!course) {
+            return res.status(404).json({
+                status: "error",
+                message: "Course not found"
+            });
+        }
+
+        // Delete associated files from Cloudinary
+        for (const content of course.content) {
+            if (content.thumbnailUrl) {
+                const publicId = content.thumbnailUrl.split('/').pop().split('.')[0];
+                await cloudinary.uploader.destroy(publicId);
+            }
+            if (content.videoUrl) {
+                const publicId = content.videoUrl.split('/').pop().split('.')[0];
+                await cloudinary.uploader.destroy(publicId);
+            }
+        }
+
+        // Delete the course
+        await Course.findByIdAndDelete(courseId);
+
+        res.status(200).json({
+            status: "success",
+            message: "Course and associated content deleted successfully"
+        });
+
+    } catch (error) {
+        console.error("Error deleting course:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error deleting course"
+        });
+    }
+});
+
+// Delete specific course content
+app.delete("/api/courses/:courseId/content/:contentId", async (req, res) => {
+    try {
+        const { courseId, contentId } = req.params;
+
+        // Validate admin access
+        const admin = await User.findOne({ role: 'admin' });
+        if (!admin) {
+            return res.status(403).json({
+                status: "error",
+                message: "Unauthorized access"
+            });
+        }
+
+        // Find the course
+        const course = await Course.findById(courseId);
+        if (!course) {
+            return res.status(404).json({
+                status: "error",
+                message: "Course not found"
+            });
+        }
+
+        // Find the content item
+        const contentItem = course.content.id(contentId);
+        if (!contentItem) {
+            return res.status(404).json({
+                status: "error",
+                message: "Content not found"
+            });
+        }
+
+        // Delete files from Cloudinary
+        if (contentItem.thumbnailUrl) {
+            const publicId = contentItem.thumbnailUrl.split('/').pop().split('.')[0];
+            await cloudinary.uploader.destroy(publicId);
+        }
+        if (contentItem.videoUrl) {
+            const publicId = contentItem.videoUrl.split('/').pop().split('.')[0];
+            await cloudinary.uploader.destroy(publicId);
+        }
+
+        // Remove the content from the course
+        course.content.pull(contentId);
+
+        // Update course status if no content remains
+        if (course.content.length === 0) {
+            course.status = 'draft';
+        }
+
+        await course.save();
+
+        res.status(200).json({
+            status: "success",
+            message: "Course content deleted successfully"
+        });
+
+    } catch (error) {
+        console.error("Error deleting course content:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error deleting course content"
+        });
+    }
+});
+
 
 
 export { app, io };
