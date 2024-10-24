@@ -40,6 +40,10 @@ const courseSchema = new mongoose.Schema(
             ref: 'User',
             required: true
         },
+        isDeleted: {
+            type: Boolean,
+            default: false
+        },
         content: [courseContentSchema]
     },
     { timestamps: true }

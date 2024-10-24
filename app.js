@@ -20,6 +20,7 @@ import { StockTrade } from "./src/models/StockTrade.models.js";
 import { Course } from "./src/models/Course.models.js";
 import { uploadOnCloudinary } from "./src/Cloudinary/Cloudinary.js";
 import cloudinary from "cloudinary"
+import { Purchase } from "./src/models/Purchase.models.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1428,6 +1429,7 @@ app.delete("/api/courses/:courseId", async (req, res) => {
 
         // Delete the course
         await Course.findByIdAndDelete(courseId);
+        await Course.findByIdAndUpdate(courseId, { isDeleted: true });
 
         res.status(200).json({
             status: "success",
@@ -1508,6 +1510,74 @@ app.delete("/api/courses/:courseId/content/:contentId", async (req, res) => {
         });
     }
 });
+
+app.post("/api/courses/:courseId/purchase", VerifyJWT, async (req, res) => {
+    try {
+        const { courseId, user } = req.params;
+        const userId = req.user._id; // Assuming you have authentication middleware
+
+        // Check if user has already purchased the course
+        const existingPurchase = await Purchase.findOne({
+            user: userId,
+            course: courseId
+        });
+
+        if (existingPurchase) {
+            return res.status(400).json({
+                status: "error",
+                message: "Course already purchased"
+            });
+        }
+
+        // Create purchase record
+        const purchase = new Purchase({
+            user: userId,
+            course: courseId,
+            purchaseDate: new Date(),
+            status: 'completed'
+        });
+
+        await purchase.save();
+
+        res.status(200).json({
+            status: "success",
+            data: purchase,
+            message: "Course purchased successfully"
+        });
+
+    } catch (error) {
+        console.error("Error purchasing course:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error purchasing course"
+        });
+    }
+});
+
+// Get user's purchased courses
+app.get("/api/users/purchases", VerifyJWT, async (req, res) => {
+    try {
+        const userId = req.user._id; // Assuming you have authentication middleware
+
+        const purchases = await Purchase.find({ user: userId })
+            .populate('course', { isDeleted: false },)
+            .sort({ purchaseDate: -1 });
+
+        res.status(200).json({
+            status: "success",
+            data: purchases
+        });
+
+    } catch (error) {
+        console.error("Error fetching purchased courses:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error fetching purchased courses"
+        });
+    }
+});
+
+
 
 
 
