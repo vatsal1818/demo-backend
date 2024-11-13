@@ -21,6 +21,7 @@ import { Course } from "./src/models/Course.models.js";
 import { uploadOnCloudinary } from "./src/Cloudinary/Cloudinary.js";
 import cloudinary from "cloudinary"
 import { Purchase } from "./src/models/Purchase.models.js";
+import { calculateExpiryDate } from "./src/utils/Helper.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -40,7 +41,7 @@ const corsOptions = {
             callback(new Error('Not allowed by CORS'));
         }
     },
-    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     credentials: true,
     allowedHeaders: ['Content-Type', 'Authorization'],
 };
@@ -1150,7 +1151,7 @@ app.put('/updateDailyChargesForAllUsers', async (req, res) => {
 
 app.post("/api/courses", async (req, res) => {
     try {
-        const { courseName, price } = req.body;
+        const { courseName, price, expiryDate, validityPeriod } = req.body;
 
         const admin = await User.findOne({ role: 'admin' });
         if (!admin) {
@@ -1160,23 +1161,34 @@ app.post("/api/courses", async (req, res) => {
             });
         }
 
-        if (!courseName || !price) {
+        if (!courseName || !price || !expiryDate || !validityPeriod) {
             return res.status(400).json({
                 status: "error",
-                message: "Course name and price are required"
+                message: "Course name, price, expiry date, and validity period are required"
             });
         }
 
-        if (isNaN(price) || parseFloat(price) < 0) {
+        const expiry = new Date(expiryDate);
+        if (isNaN(expiry.getTime()) || expiry < new Date()) {
             return res.status(400).json({
                 status: "error",
-                message: "Invalid price format"
+                message: "Invalid expiry date. Date must be in the future."
+            });
+        }
+
+        // Validate validity period
+        if (!validityPeriod.duration || !validityPeriod.unit) {
+            return res.status(400).json({
+                status: "error",
+                message: "Invalid validity period"
             });
         }
 
         const course = new Course({
             courseName,
             price: parseFloat(price),
+            expiryDate: expiry,
+            validityPeriod,
             createdBy: admin,
             status: 'draft',
             content: []
@@ -1199,6 +1211,26 @@ app.post("/api/courses", async (req, res) => {
         });
     }
 });
+
+app.get("/api/courses", async (req, res) => {
+    try {
+        const courses = await Course.find()
+            .select('courseName price status expiryDate validityPeriod') // Added expiryDate to selection
+            .sort({ createdAt: -1 });
+
+        res.status(200).json({
+            status: "success",
+            data: courses
+        });
+    } catch (error) {
+        console.error("Error fetching courses:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error fetching courses"
+        });
+    }
+});
+
 
 app.post("/api/courses/:courseId/content",
     upload.fields([
@@ -1286,22 +1318,87 @@ app.post("/api/courses/:courseId/content",
     }
 );
 
-// Get all courses
-app.get("/api/courses", async (req, res) => {
+app.put("/api/courses/:courseId", async (req, res) => {
     try {
-        const courses = await Course.find()
-            .select('courseName price status')
-            .sort({ createdAt: -1 });
+        const { courseId } = req.params;
+        const { courseName, price, expiryDate, validityPeriod } = req.body;
+
+        // Validate admin access
+        const admin = await User.findOne({ role: 'admin' });
+        if (!admin) {
+            return res.status(403).json({
+                status: "error",
+                message: "Unauthorized access"
+            });
+        }
+
+        // Input validation
+        if (!courseName || !price || !expiryDate || !validityPeriod) {
+            return res.status(400).json({
+                status: "error",
+                message: "Course name, price, expiry date, and validity period are required"
+            });
+        }
+
+        if (isNaN(price) || parseFloat(price) < 0) {
+            return res.status(400).json({
+                status: "error",
+                message: "Invalid price format"
+            });
+        }
+
+        // Validate expiry date
+        const expiryDateObj = new Date(expiryDate);
+        if (isNaN(expiryDateObj.getTime())) {
+            return res.status(400).json({
+                status: "error",
+                message: "Invalid expiry date format"
+            });
+        }
+
+        // Validate validity period
+        if (!validityPeriod.duration || !validityPeriod.unit ||
+            !["days", "months", "years"].includes(validityPeriod.unit) ||
+            parseInt(validityPeriod.duration) <= 0) {
+            return res.status(400).json({
+                status: "error",
+                message: "Invalid validity period"
+            });
+        }
+
+        // Update course
+        const updatedCourse = await Course.findByIdAndUpdate(
+            courseId,
+            {
+                courseName,
+                price: parseFloat(price),
+                expiryDate: expiryDateObj,
+                validityPeriod: {
+                    duration: parseInt(validityPeriod.duration),
+                    unit: validityPeriod.unit
+                }
+            },
+            { new: true }
+        );
+
+        if (!updatedCourse) {
+            return res.status(404).json({
+                status: "error",
+                message: "Course not found"
+            });
+        }
 
         res.status(200).json({
             status: "success",
-            data: courses
+            data: updatedCourse,
+            message: "Course updated successfully"
         });
+
     } catch (error) {
-        console.error("Error fetching courses:", error);
+        console.error("Error updating course:", error);
         res.status(500).json({
             status: "error",
-            message: "Error fetching courses"
+            message: "Error updating course"
         });
     }
 });
@@ -1331,66 +1428,122 @@ app.get("/api/courses/:courseId", async (req, res) => {
     }
 });
 
-app.put("/api/courses/:courseId", async (req, res) => {
+app.post("/api/courses/:courseId/purchase", VerifyJWT, async (req, res) => {
     try {
         const { courseId } = req.params;
-        const { courseName, price } = req.body;
+        const userId = req.user._id;
 
-        // Validate admin access
-        const admin = await User.findOne({ role: 'admin' });
-        if (!admin) {
-            return res.status(403).json({
-                status: "error",
-                message: "Unauthorized access"
-            });
-        }
+        const existingPurchase = await Purchase.findOne({
+            user: userId,
+            course: courseId,
+            status: 'completed'
+        });
 
-        // Input validation
-        if (!courseName || !price) {
+        if (existingPurchase) {
             return res.status(400).json({
                 status: "error",
-                message: "Course name and price are required"
+                message: "Course already purchased"
             });
         }
 
-        if (isNaN(price) || parseFloat(price) < 0) {
-            return res.status(400).json({
-                status: "error",
-                message: "Invalid price format"
-            });
-        }
+        const purchaseDate = new Date();
+        const expiryDate = new Date(purchaseDate);
 
-        // Update course
-        const updatedCourse = await Course.findByIdAndUpdate(
-            courseId,
-            {
-                courseName,
-                price: parseFloat(price)
-            },
-            { new: true }
-        );
+        const purchase = new Purchase({
+            user: userId,
+            course: courseId,
+            purchaseDate,
+            expiryDate,
+            status: 'completed'
+        });
 
-        if (!updatedCourse) {
-            return res.status(404).json({
-                status: "error",
-                message: "Course not found"
-            });
-        }
+        await purchase.save();
 
         res.status(200).json({
             status: "success",
-            data: updatedCourse,
-            message: "Course updated successfully"
+            data: purchase,
+            message: "Course purchased successfully"
         });
 
     } catch (error) {
-        console.error("Error updating course:", error);
+        console.error("Error purchasing course:", error);
         res.status(500).json({
             status: "error",
-            message: "Error updating course"
+            message: "Error purchasing course"
         });
     }
 });
+
+// Get user's purchased courses
+app.get("/api/users/purchases", VerifyJWT, async (req, res) => {
+    try {
+        const userId = req.user._id;
+
+        // Fetch purchases with the latest course data
+        const purchases = await Purchase.find({ user: userId })
+            .populate('course', 'courseName price validityPeriod isActive content')
+            .sort({ purchaseDate: -1 });
+
+        const purchasesWithValidity = purchases.map(purchase => {
+            try {
+                const purchaseObj = purchase.toObject();
+
+                // Ensure we're using the latest validityPeriod from the course
+                console.log('Fetched validityPeriod:', purchaseObj.course?.validityPeriod);
+
+                // Calculate expiry date based on the latest validityPeriod
+                const validityExpiryDate = calculateExpiryDate(
+                    purchaseObj.purchaseDate,
+                    purchaseObj.course?.validityPeriod || { unit: 'years', duration: 1 }
+                );
+
+                // Determine if the purchase is expired and update isActive status
+                const isExpired = validityExpiryDate < new Date();
+                const isActive = !isExpired && purchaseObj.course?.isActive;
+
+                return {
+                    ...purchaseObj,
+                    validityExpiryDate,
+                    accessStatus: {
+                        isExpired,
+                        isActive,
+                        remainingDays: isExpired ? 0 :
+                            Math.ceil((validityExpiryDate - new Date()) / (1000 * 60 * 60 * 24))
+                    }
+                };
+            } catch (error) {
+                console.error('Error processing purchase:', error);
+
+                // Default validity if calculation fails
+                const defaultExpiry = new Date();
+                defaultExpiry.setFullYear(defaultExpiry.getFullYear() + 1);
+
+                return {
+                    ...purchase.toObject(),
+                    validityExpiryDate: defaultExpiry,
+                    accessStatus: {
+                        isExpired: false,
+                        isActive: purchase.course?.isActive ?? true,
+                        remainingDays: 365
+                    }
+                };
+            }
+        });
+
+        res.status(200).json({
+            status: "success",
+            data: purchasesWithValidity
+        });
+
+    } catch (error) {
+        console.error("Error fetching purchased courses:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error fetching purchased courses"
+        });
+    }
+});
+
 
 // Delete entire course
 app.delete("/api/courses/:courseId", async (req, res) => {
@@ -1511,68 +1664,168 @@ app.delete("/api/courses/:courseId/content/:contentId", async (req, res) => {
     }
 });
 
-app.post("/api/courses/:courseId/purchase", VerifyJWT, async (req, res) => {
+app.get("/api/admin/purchases", async (req, res) => {
     try {
-        const { courseId, user } = req.params;
-        const userId = req.user._id; // Assuming you have authentication middleware
-
-        // Check if user has already purchased the course
-        const existingPurchase = await Purchase.findOne({
-            user: userId,
-            course: courseId
-        });
-
-        if (existingPurchase) {
-            return res.status(400).json({
+        const admin = await User.findOne({ role: 'admin' });
+        if (!admin) {
+            return res.status(403).json({
                 status: "error",
-                message: "Course already purchased"
+                message: "Unauthorized access"
             });
         }
 
-        // Create purchase record
-        const purchase = new Purchase({
-            user: userId,
-            course: courseId,
-            purchaseDate: new Date(),
-            status: 'completed'
+        const {
+            page = 1,
+            limit = 10,
+            sortBy = 'purchaseDate',
+            sortOrder = 'desc',
+            username,
+            courseName,
+            status
+        } = req.query;
+
+        const filter = {};
+        if (status) {
+            filter.status = status;
+        }
+
+        let query = Purchase.find(filter);
+
+        query = query.populate({
+            path: 'user',
+            select: 'username email',
+            match: username ? { username: new RegExp(username, 'i') } : {}
+        }).populate({
+            path: 'course',
+            select: 'courseName price validityPeriod isActive',
+            match: courseName ? { courseName: new RegExp(courseName, 'i') } : {}
         });
 
-        await purchase.save();
+        const sortDirection = sortOrder === 'desc' ? -1 : 1;
+        query = query.sort({ [sortBy]: sortDirection });
+
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+        query = query.skip(skip).limit(parseInt(limit));
+
+        const purchases = await query.exec();
+
+        // Calculate expiry date for each purchase with error handling
+        const purchasesWithExpiry = purchases
+            .filter(purchase => purchase.user && purchase.course)
+            .map(purchase => {
+                try {
+                    const purchaseObj = purchase.toObject();
+                    return {
+                        ...purchaseObj,
+                        validityExpiryDate: calculateExpiryDate(
+                            purchaseObj.purchaseDate,
+                            purchaseObj.course?.validityPeriod || { unit: 'years', duration: 1 }
+                        )
+                    };
+                } catch (error) {
+                    console.error('Error processing purchase:', error);
+                    // Return purchase with default expiry date
+                    const defaultExpiry = new Date(purchase.purchaseDate);
+                    defaultExpiry.setFullYear(defaultExpiry.getFullYear() + 1);
+
+                    return {
+                        ...purchase.toObject(),
+                        validityExpiryDate: defaultExpiry
+                    };
+                }
+            });
+
+        const totalCount = await Purchase.countDocuments(filter);
 
         res.status(200).json({
             status: "success",
-            data: purchase,
-            message: "Course purchased successfully"
+            data: purchasesWithExpiry,
+            pagination: {
+                currentPage: parseInt(page),
+                totalPages: Math.ceil(totalCount / parseInt(limit)),
+                totalItems: totalCount,
+                itemsPerPage: parseInt(limit)
+            }
         });
 
     } catch (error) {
-        console.error("Error purchasing course:", error);
+        console.error("Error fetching all purchases:", error);
         res.status(500).json({
             status: "error",
-            message: "Error purchasing course"
+            message: "Error fetching purchases"
         });
     }
 });
 
-// Get user's purchased courses
-app.get("/api/users/purchases", VerifyJWT, async (req, res) => {
+app.patch('/api/admin/purchases/:courseId/toggle-status', async (req, res) => {
     try {
-        const userId = req.user._id; // Assuming you have authentication middleware
+        // Verify admin access
+        const admin = await User.findOne({ role: 'admin' });
+        if (!admin) {
+            return res.status(403).json({
+                status: "error",
+                message: "Unauthorized access"
+            });
+        }
 
-        const purchases = await Purchase.find({ user: userId })
-            .populate('course', { isDeleted: false },)
-            .sort({ purchaseDate: -1 });
+        const { courseId } = req.params;
+        const { isActive } = req.body;
+
+        const course = await Course.findByIdAndUpdate(
+            courseId,
+            { isActive },
+            { new: true }
+        );
+
+        if (!course) {
+            return res.status(404).json({
+                status: "error",
+                message: "Course not found"
+            });
+        }
 
         res.status(200).json({
             status: "success",
-            data: purchases
+            data: course
         });
 
     } catch (error) {
-        console.error("Error fetching purchased courses:", error);
+        console.error("Error toggling course status:", error);
         res.status(500).json({
             status: "error",
-            message: "Error fetching purchased courses"
+            message: "Error updating course status"
+        });
+    }
+});
+
+app.patch('/api/admin/purchases/toggle-all-status', async (req, res) => {
+    try {
+        // Verify admin access
+        const admin = await User.findOne({ role: 'admin' });
+        if (!admin) {
+            return res.status(403).json({
+                status: "error",
+                message: "Unauthorized access"
+            });
+        }
+
+        const { isActive } = req.body;
+
+        await Course.updateMany(
+            {},
+            { isActive }
+        );
+
+        res.status(200).json({
+            status: "success",
+            message: `All courses ${isActive ? 'activated' : 'deactivated'} successfully`
+        });
+
+    } catch (error) {
+        console.error("Error toggling all courses status:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error updating courses status"
         });
     }
 });

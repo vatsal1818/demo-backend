@@ -25,6 +25,10 @@ const purchaseSchema = new mongoose.Schema({
         type: Date,
         default: Date.now
     },
+    expiryDate: {
+        type: Date,
+        required: true
+    },
     completedAt: {
         type: Date
     },
