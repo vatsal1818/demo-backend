@@ -22,6 +22,7 @@ import { uploadOnCloudinary } from "./src/Cloudinary/Cloudinary.js";
 import cloudinary from "cloudinary"
 import { Purchase } from "./src/models/Purchase.models.js";
 import { calculateExpiryDate } from "./src/utils/Helper.js";
+import { AdminContent } from "./src/models/AdminContent.models.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1831,7 +1832,92 @@ app.patch('/api/admin/purchases/toggle-all-status', async (req, res) => {
 });
 
 
+// example 
+const initializeContent = async () => {
+    try {
+        const content = await AdminContent.findOne();
+        if (!content) {
+            await AdminContent.create({
+                title: 'Welcome to Our Website',
+                image: ''
+            });
+            console.log('Default content initialized');
+        }
+    } catch (error) {
+        console.error('Error initializing content:', error);
+    }
+};
+
+initializeContent();
+
+// Get content
+app.get('/api/content', async (req, res) => {
+    try {
+        const content = await AdminContent.findOne();
+        res.json(content);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch content' });
+    }
+});
+
+// Update content
+app.post("/api/content", upload.single('image'), async (req, res) => {
+    try {
+        const { title, paragraph, button } = req.body;
 
 
+        // Check if image was uploaded
+        if (!req.file) {
+            return res.status(400).json({
+                status: "error",
+                message: "Image is required"
+            });
+        }
+
+        // Upload to Cloudinary
+        let imageUrl;
+        try {
+            const result = await uploadOnCloudinary(req.file);
+            imageUrl = result.secure_url;
+        } catch (uploadError) {
+            console.error("Error uploading to Cloudinary:", uploadError);
+            return res.status(500).json({
+                status: "error",
+                message: "Error uploading image to Cloudinary",
+                error: uploadError.message
+            });
+        }
+
+        // Save content to database
+        const content = await AdminContent.findOneAndUpdate(
+            {}, // Find first document
+            {
+                title,
+                paragraph,
+                button,
+                imageUrl,
+                updatedAt: new Date()
+            },
+            {
+                new: true,
+                upsert: true
+            }
+        );
+
+        res.status(200).json({
+            status: "success",
+            data: content,
+            message: "Content updated successfully"
+        });
+
+    } catch (error) {
+        console.error("Error updating content:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error updating content",
+            error: error.message
+        });
+    }
+});
 
 export { app, io };
