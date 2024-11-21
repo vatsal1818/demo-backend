@@ -30,6 +30,14 @@ const courseSchema = new mongoose.Schema(
             required: true,
             min: 0
         },
+        courseDescription: {
+            type: String,
+            trim: true
+        },
+        courseThumbnailUrl: {
+            type: String,
+            default: ''
+        },
         expiryDate: {
             type: Date,
             required: true

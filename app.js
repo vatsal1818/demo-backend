@@ -23,6 +23,12 @@ import cloudinary from "cloudinary"
 import { Purchase } from "./src/models/Purchase.models.js";
 import { calculateExpiryDate } from "./src/utils/Helper.js";
 import { AdminContent } from "./src/models/AdminContent.models.js";
+import { AboutUs, WhyChooseUs } from "./src/models/AboutUs.models.js";
+import { Testimonial } from "./src/models/Testimonials.models.js";
+import { Video } from "./src/models/ShortVideo.models.js";
+import { Banner } from "./src/models/Banner.models.js";
+import nodemailer from "nodemailer";
+import { Comment } from "./src/models/Comment.models.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1148,11 +1154,10 @@ app.put('/updateDailyChargesForAllUsers', async (req, res) => {
     }
 });
 
-// courses
-
-app.post("/api/courses", async (req, res) => {
+// COURSES
+app.post("/api/courses", upload.single('image'), async (req, res) => {
     try {
-        const { courseName, price, expiryDate, validityPeriod } = req.body;
+        const { courseName, price, expiryDate, validityPeriod, courseDescription } = req.body;
 
         const admin = await User.findOne({ role: 'admin' });
         if (!admin) {
@@ -1162,10 +1167,32 @@ app.post("/api/courses", async (req, res) => {
             });
         }
 
-        if (!courseName || !price || !expiryDate || !validityPeriod) {
+        if (!courseName || !price || !expiryDate || !validityPeriod || !courseDescription) {
             return res.status(400).json({
                 status: "error",
                 message: "Course name, price, expiry date, and validity period are required"
+            });
+        }
+
+        // Check if image was uploaded
+        if (!req.file) {
+            return res.status(400).json({
+                status: "error",
+                message: "Image is required"
+            });
+        }
+
+        // Upload to Cloudinary
+        let courseThumbnailUrl;
+        try {
+            const result = await uploadOnCloudinary(req.file);
+            courseThumbnailUrl = result.secure_url;
+        } catch (uploadError) {
+            console.error("Error uploading to Cloudinary:", uploadError);
+            return res.status(500).json({
+                status: "error",
+                message: "Error uploading image to Cloudinary",
+                error: uploadError.message
             });
         }
 
@@ -1187,9 +1214,11 @@ app.post("/api/courses", async (req, res) => {
 
         const course = new Course({
             courseName,
+            courseDescription,
             price: parseFloat(price),
             expiryDate: expiry,
             validityPeriod,
+            courseThumbnailUrl,
             createdBy: admin,
             status: 'draft',
             content: []
@@ -1216,7 +1245,7 @@ app.post("/api/courses", async (req, res) => {
 app.get("/api/courses", async (req, res) => {
     try {
         const courses = await Course.find()
-            .select('courseName price status expiryDate validityPeriod') // Added expiryDate to selection
+            .select('courseName price status expiryDate validityPeriod courseDescription courseThumbnailUrl') // Added expiryDate to selection
             .sort({ createdAt: -1 });
 
         res.status(200).json({
@@ -1231,7 +1260,6 @@ app.get("/api/courses", async (req, res) => {
         });
     }
 });
-
 
 app.post("/api/courses/:courseId/content",
     upload.fields([
@@ -1319,10 +1347,10 @@ app.post("/api/courses/:courseId/content",
     }
 );
 
-app.put("/api/courses/:courseId", async (req, res) => {
+app.put("/api/courses/:courseId", upload.single('image'), async (req, res) => {
     try {
         const { courseId } = req.params;
-        const { courseName, price, expiryDate, validityPeriod } = req.body;
+        const { courseName, price, expiryDate, validityPeriod, courseDescription } = req.body;
 
         // Validate admin access
         const admin = await User.findOne({ role: 'admin' });
@@ -1334,7 +1362,7 @@ app.put("/api/courses/:courseId", async (req, res) => {
         }
 
         // Input validation
-        if (!courseName || !price || !expiryDate || !validityPeriod) {
+        if (!courseName || !price || !expiryDate || !validityPeriod || !courseDescription) {
             return res.status(400).json({
                 status: "error",
                 message: "Course name, price, expiry date, and validity period are required"
@@ -1367,18 +1395,38 @@ app.put("/api/courses/:courseId", async (req, res) => {
             });
         }
 
+        // Prepare update object
+        const updateData = {
+            courseName,
+            courseDescription,
+            price: parseFloat(price),
+            expiryDate: expiryDateObj,
+            validityPeriod: {
+                duration: parseInt(validityPeriod.duration),
+                unit: validityPeriod.unit
+            }
+        };
+
+        // Handle thumbnail upload if a new image is provided
+        if (req.file) {
+            try {
+                // Upload to Cloudinary
+                const result = await uploadOnCloudinary(req.file);
+                updateData.courseThumbnailUrl = result.secure_url;
+            } catch (uploadError) {
+                console.error("Error uploading to Cloudinary:", uploadError);
+                return res.status(500).json({
+                    status: "error",
+                    message: "Error uploading image to Cloudinary",
+                    error: uploadError.message
+                });
+            }
+        }
+
         // Update course
         const updatedCourse = await Course.findByIdAndUpdate(
             courseId,
-            {
-                courseName,
-                price: parseFloat(price),
-                expiryDate: expiryDateObj,
-                validityPeriod: {
-                    duration: parseInt(validityPeriod.duration),
-                    unit: validityPeriod.unit
-                }
-            },
+            updateData,
             { new: true }
         );
 
@@ -1406,6 +1454,7 @@ app.put("/api/courses/:courseId", async (req, res) => {
 
 app.get("/api/courses/:courseId", async (req, res) => {
     try {
+        // Use populate to get content details if needed
         const course = await Course.findById(req.params.courseId);
 
         if (!course) {
@@ -1415,9 +1464,15 @@ app.get("/api/courses/:courseId", async (req, res) => {
             });
         }
 
+        // Assuming course.content is an array of video content
+        const contentCount = course.content ? course.content.length : 0;
+
         res.status(200).json({
             status: "success",
-            data: course,
+            data: {
+                ...course.toObject(),
+                contentCount,
+            },
             message: "Course details retrieved successfully"
         });
     } catch (error) {
@@ -1833,25 +1888,9 @@ app.patch('/api/admin/purchases/toggle-all-status', async (req, res) => {
 
 
 // example 
-const initializeContent = async () => {
-    try {
-        const content = await AdminContent.findOne();
-        if (!content) {
-            await AdminContent.create({
-                title: 'Welcome to Our Website',
-                image: ''
-            });
-            console.log('Default content initialized');
-        }
-    } catch (error) {
-        console.error('Error initializing content:', error);
-    }
-};
 
-initializeContent();
-
-// Get content
-app.get('/api/content', async (req, res) => {
+//Home page
+app.get('/api/homepage-content', async (req, res) => {
     try {
         const content = await AdminContent.findOne();
         res.json(content);
@@ -1860,8 +1899,7 @@ app.get('/api/content', async (req, res) => {
     }
 });
 
-// Update content
-app.post("/api/content", upload.single('image'), async (req, res) => {
+app.post("/api/homepage-content", upload.single('image'), async (req, res) => {
     try {
         const { title, paragraph, button } = req.body;
 
@@ -1919,5 +1957,585 @@ app.post("/api/content", upload.single('image'), async (req, res) => {
         });
     }
 });
+
+app.post("/api/testimonials", upload.none(), async (req, res) => {
+    try {
+        console.log('Received form-data:', req.body);
+
+        // Validate the form-data
+        const { name, comment } = req.body;
+
+        if (!name || !comment) {
+            return res.status(400).json({
+                status: "error",
+                message: "Name and comment are required fields",
+            });
+        }
+
+        if (name.trim() === '' || comment.trim() === '') {
+            return res.status(400).json({
+                status: "error",
+                message: "Name and comment cannot be empty",
+            });
+        }
+
+        const newTestimonial = await Testimonial.create({
+            name: name.trim(),
+            comment: comment.trim(),
+        });
+
+        res.status(201).json({
+            status: "success",
+            data: newTestimonial,
+            message: "Testimonial added successfully",
+        });
+    } catch (error) {
+        console.error("Error adding testimonial:", error);
+
+        if (error.name === 'ValidationError') {
+            return res.status(400).json({
+                status: "error",
+                message: "Validation Error",
+                errors: Object.keys(error.errors).reduce((acc, key) => {
+                    acc[key] = error.errors[key].message;
+                    return acc;
+                }, {}),
+            });
+        }
+
+        res.status(500).json({
+            status: "error",
+            message: "Error adding testimonial",
+            error: error.message,
+        });
+    }
+});
+
+app.put("/api/testimonials/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, comment } = req.body;
+
+        // Validate input
+        if (!name || !comment) {
+            return res.status(400).json({
+                status: "error",
+                message: "Name and comment are required fields",
+            });
+        }
+
+        if (name.trim() === "" || comment.trim() === "") {
+            return res.status(400).json({
+                status: "error",
+                message: "Name and comment cannot be empty",
+            });
+        }
+
+        const updatedTestimonial = await Testimonial.findByIdAndUpdate(
+            id,
+            {
+                name: name.trim(),
+                comment: comment.trim(),
+            },
+            { new: true, runValidators: true }
+        );
+
+        if (!updatedTestimonial) {
+            return res.status(404).json({
+                status: "error",
+                message: "Testimonial not found",
+            });
+        }
+
+        res.status(200).json({
+            status: "success",
+            data: updatedTestimonial,
+            message: "Testimonial updated successfully",
+        });
+    } catch (error) {
+        console.error("Error updating testimonial:", error);
+
+        if (error.name === "ValidationError") {
+            return res.status(400).json({
+                status: "error",
+                message: "Validation Error",
+                errors: Object.keys(error.errors).reduce((acc, key) => {
+                    acc[key] = error.errors[key].message;
+                    return acc;
+                }, {}),
+            });
+        }
+
+        res.status(500).json({
+            status: "error",
+            message: "Error updating testimonial",
+            error: error.message,
+        });
+    }
+});
+
+app.delete("/api/testimonials/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const deletedTestimonial = await Testimonial.findByIdAndDelete(id);
+
+        if (!deletedTestimonial) {
+            return res.status(404).json({
+                status: "error",
+                message: "Testimonial not found",
+            });
+        }
+
+        res.status(200).json({
+            status: "success",
+            message: "Testimonial deleted successfully",
+            data: deletedTestimonial,
+        });
+    } catch (error) {
+        console.error("Error deleting testimonial:", error);
+
+        res.status(500).json({
+            status: "error",
+            message: "Error deleting testimonial",
+            error: error.message,
+        });
+    }
+});
+
+app.get("/api/testimonials", async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+
+        const testimonials = await Testimonial
+            .find()
+            .sort({ createdAt: -1 })
+            .skip((page - 1) * limit)
+            .limit(limit);
+
+        const total = await Testimonial.countDocuments();
+
+        res.status(200).json({
+            status: "success",
+            data: {
+                testimonials,
+                currentPage: page,
+                totalPages: Math.ceil(total / limit),
+                totalTestimonials: total
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            status: "error",
+            message: "Error fetching testimonials"
+        });
+    }
+});
+
+//About Page
+app.get('/api/about-us-content', async (req, res) => {
+    try {
+        const content = await AboutUs.findOne();
+        res.json(content);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch About Us content' });
+    }
+});
+
+app.post("/api/about-us-content", upload.single('image'), async (req, res) => {
+    try {
+        const { title, paragraph, button } = req.body;
+
+        let updateData = {
+            title,
+            paragraph,
+            button,
+            updatedAt: new Date()
+        };
+
+        if (req.file) {
+            try {
+                const result = await uploadOnCloudinary(req.file);
+                updateData.imageUrl = result.secure_url;
+            } catch (uploadError) {
+                return res.status(500).json({
+                    status: "error",
+                    message: "Error uploading image to Cloudinary",
+                    error: uploadError.message
+                });
+            }
+        }
+
+        const content = await AboutUs.findOneAndUpdate(
+            {},
+            updateData,
+            {
+                new: true,
+                upsert: true
+            }
+        );
+
+        res.status(200).json({
+            status: "success",
+            data: content,
+            message: "About Us content updated successfully"
+        });
+
+    } catch (error) {
+        console.error("Error updating About Us content:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error updating About Us content",
+            error: error.message
+        });
+    }
+});
+
+// Why Choose Us routes
+app.get('/api/why-choose-us-content', async (req, res) => {
+    try {
+        const content = await WhyChooseUs.findOne();
+        res.json(content);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch Why Choose Us content' });
+    }
+});
+
+app.post("/api/why-choose-us-content", async (req, res) => {
+    try {
+        const { title, reasons } = req.body;
+
+        const content = await WhyChooseUs.findOneAndUpdate(
+            {},
+            {
+                title,
+                reasons,
+                updatedAt: new Date()
+            },
+            {
+                new: true,
+                upsert: true
+            }
+        );
+
+        res.status(200).json({
+            status: "success",
+            data: content,
+            message: "Why Choose Us content updated successfully"
+        });
+
+    } catch (error) {
+        console.error("Error updating Why Choose Us content:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error updating Why Choose Us content",
+            error: error.message
+        });
+    }
+});
+
+// shorst video 
+app.post('/api/admin/video', async (req, res) => {
+    const { url } = req.body;
+
+    try {
+        if (!url) {
+            return res.status(400).send({ error: 'URL is required.' });
+        }
+
+        const videoUrl = new URL(url);
+
+        if (!videoUrl.hostname.includes('youtube.com') || !videoUrl.pathname.includes('/shorts/')) {
+            return res.status(400).send({ error: 'Invalid YouTube Shorts URL.' });
+        }
+
+        const videoId = videoUrl.pathname.split('/shorts/')[1];
+
+        if (!videoId) {
+            return res.status(400).send({ error: 'Could not extract video ID.' });
+        }
+
+        const embedCode = `<iframe
+            width="560"
+            height="315"
+            src="https://www.youtube.com/embed/${videoId}"
+            frameborder="0"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowfullscreen
+        ></iframe>`;
+
+        const video = new Video({ embedCode });
+        await video.save();
+
+        res.status(201).send({ message: 'Video added successfully.', video });
+    } catch (error) {
+        console.error('Error processing URL:', error);
+
+        if (error instanceof TypeError && error.message.includes('Invalid URL')) {
+            return res.status(400).send({ error: 'Invalid URL format.' });
+        }
+
+        res.status(500).send({ error: 'Failed to process the YouTube Shorts URL.' });
+    }
+});
+
+app.get('/api/admin/video', async (req, res) => {
+    try {
+        const videos = await Video.find().sort({ createdAt: -1 });
+        res.send(videos);
+    } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to fetch videos.' });
+    }
+});
+
+app.delete('/api/admin/video/:id', async (req, res) => {
+    try {
+        const video = await Video.findByIdAndDelete(req.params.id);
+        if (!video) {
+            return res.status(404).send({ error: 'Video not found.' });
+        }
+        res.send({ message: 'Video deleted successfully.' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: 'Failed to delete video.' });
+    }
+});
+
+// Banner
+app.post("/api/banners", upload.array('banners', 5), async (req, res) => {
+    try {
+        if (!req.files || req.files.length === 0) {
+            return res.status(400).json({
+                status: "error",
+                message: "At least one banner image is required"
+            });
+        }
+
+        const links = JSON.parse(req.body.links || '[]');
+        const bannerUrls = [];
+
+        try {
+            for (const file of req.files) {
+                const result = await uploadOnCloudinary(file);
+                bannerUrls.push(result.secure_url);
+            }
+        } catch (uploadError) {
+            console.error("Error uploading to Cloudinary:", uploadError);
+            return res.status(500).json({
+                status: "error",
+                message: "Error uploading banner images",
+                error: uploadError.message
+            });
+        }
+
+        // Create banner documents with links
+        const banners = await Banner.insertMany(
+            bannerUrls.map((url, index) => ({
+                bannerUrl: url,
+                link: links[index] || '#'  // Use provided link or default
+            }))
+        );
+
+        res.status(200).json({
+            status: "success",
+            data: banners,
+            message: "Banners uploaded successfully"
+        });
+
+    } catch (error) {
+        console.error("Error uploading banners:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error processing banner upload",
+            error: error.message
+        });
+    }
+});
+
+// Route to get all banners
+app.get("/api/banners", async (req, res) => {
+    try {
+        const banners = await Banner.find();
+        res.status(200).json({
+            status: "success",
+            data: banners
+        });
+    } catch (error) {
+        console.error("Error fetching banners:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error retrieving banners",
+            error: error.message
+        });
+    }
+});
+
+// Route to delete a specific banner
+app.delete("/api/banners/:id", async (req, res) => {
+    try {
+        const deletedBanner = await Banner.findByIdAndDelete(req.params.id);
+
+        if (!deletedBanner) {
+            return res.status(404).json({
+                status: "error",
+                message: "Banner not found"
+            });
+        }
+
+        res.status(200).json({
+            status: "success",
+            message: "Banner deleted successfully"
+        });
+    } catch (error) {
+        console.error("Error deleting banner:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error deleting banner",
+            error: error.message
+        });
+    }
+});
+
+// mail sending
+const transporter = nodemailer.createTransport({
+    service: 'gmail', // Use your email provider (e.g., Gmail, Outlook)
+    auth: {
+        user: process.env.EMAIL_USER, // Replace with your email
+        pass: process.env.EMAIL_PASS,  // Replace with your email password or app password
+    }
+});
+
+app.post('/send-email', (req, res) => {
+    const { name, phone, email, message, country } = req.body;
+
+    const mailOptions = {
+        from: email,
+        to: 'vatsalsoni1818@gmail.com', // Replace with the admin's email
+        subject: `New Contact Form Submission from ${name}`,
+        text: `
+        Name: ${name}
+        Phone: ${phone}
+        Email: ${email}
+        Country: ${country}
+        Message: ${message}
+        `
+    };
+
+    transporter.sendMail(mailOptions, (error, info) => {
+        if (error) {
+            console.error('Error sending email:', error);
+            res.status(500).send('Error sending email');
+        } else {
+            console.log('Email sent:', info.response);
+            res.status(200).send('Email sent successfully');
+        }
+    });
+});
+
+// User Comments 
+app.get('/api/courses/:courseId/comments', VerifyJWT, async (req, res) => {
+    try {
+        // Find admin user
+        const admin = await User.findOne({ role: 'admin' });
+
+        // Build query based on whether the requester is admin
+        const query = { course: req.params.courseId };
+
+        // If current user is admin, show all comments
+        // If not admin, show only their own comments
+        if (req.user._id.toString() !== admin._id.toString()) {
+            query.user = req.user._id;
+        }
+
+        const comments = await Comment.find(query)
+            .populate('user', 'username email role')
+            .populate('course', 'courseName')
+            .sort({ createdAt: -1 });
+
+        res.json({
+            success: true,
+            data: comments,
+            isAdmin: req.user._id.toString() === admin._id.toString()
+        });
+    } catch (error) {
+        console.error('Comment fetch error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Modified DELETE route to use admin check
+app.delete('/api/courses/:courseId/comments/:commentId', VerifyJWT, async (req, res) => {
+    try {
+        const comment = await Comment.findById(req.params.commentId);
+        const admin = await User.findOne({ role: 'admin' });
+
+        if (!comment) {
+            return res.status(404).json({
+                success: false,
+                error: 'Comment not found'
+            });
+        }
+
+        // Check if user is admin or comment owner
+        if (req.user._id.toString() !== admin._id.toString() &&
+            comment.user.toString() !== req.user._id.toString()) {
+            return res.status(403).json({
+                success: false,
+                error: 'Not authorized to delete this comment'
+            });
+        }
+
+        await Comment.findByIdAndDelete(req.params.commentId);
+
+        res.json({
+            success: true,
+            message: 'Comment deleted successfully'
+        });
+    } catch (error) {
+        console.error('Comment deletion error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// POST route with admin check
+app.post('/api/courses/:courseId/comments', VerifyJWT, async (req, res) => {
+    try {
+        const admin = await User.findOne({ role: 'admin' });
+
+        const comment = new Comment({
+            course: req.params.courseId,
+            user: req.user._id,
+            content: req.body.content
+        });
+
+        await comment.save();
+
+        const populatedComment = await Comment.findById(comment._id)
+            .populate('user', 'username email')
+            .populate('course', 'courseName');
+
+        // Include isAdmin flag in response
+        res.status(201).json({
+            success: true,
+            data: populatedComment,
+            isAdmin: req.user._id.toString() === admin._id.toString()
+        });
+    } catch (error) {
+        console.error('Comment creation error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
 
 export { app, io };
