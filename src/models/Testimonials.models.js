@@ -6,6 +6,16 @@ const TestimonialSchema = new mongoose.Schema({
         required: [true, 'Name is required'],
         trim: true
     },
+    profession: {
+        type: String,
+        required: [true, 'Profession is required'],
+        trim: true
+    },
+    courseName: {
+        type: String,
+        required: [true, 'Course name is required'],
+        trim: true
+    },
     comment: {
         type: String,
         required: [true, 'Comment is required'],

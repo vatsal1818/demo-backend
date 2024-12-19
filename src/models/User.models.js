@@ -53,7 +53,14 @@ const userSchema = new Schema(
         purchasedCourses: [{
             courseId: { type: mongoose.Schema.Types.ObjectId, ref: 'Course' },
             progress: { type: Number, default: 0 }  // To track progress
-        }]
+        }],
+        linkStates: {
+            home: { type: Boolean, default: true },
+            chat: { type: Boolean, default: true },
+            alltrade: { type: Boolean, default: true },
+            courses: { type: Boolean, default: true },
+            myCourses: { type: Boolean, default: true }
+        }
     },
     { timestamps: true }
 );

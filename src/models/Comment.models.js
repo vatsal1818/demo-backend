@@ -1,25 +1,42 @@
 import mongoose from "mongoose";
 
 const CommentSchema = new mongoose.Schema({
-    course: {  // Changed from courseId to course
+    course: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Course',
         required: true
     },
-    user: {    // Changed from userId to user
+    courseContent: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Course.content',
+        required: true
+    },
+    user: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
         required: true
     },
     content: {
         type: String,
-        required: true,
-        trim: true
+        required: true
     },
-    timestamp: {
-        type: Date,
-        default: Date.now
+    adminReply: {
+        content: {
+            type: String,
+            default: null
+        },
+        repliedAt: {
+            type: Date,
+            default: null
+        },
+        repliedBy: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'User',
+            default: null
+        }
     }
-}, { timestamps: true });
+}, {
+    timestamps: true
+});
 
 export const Comment = mongoose.model('Comment', CommentSchema);

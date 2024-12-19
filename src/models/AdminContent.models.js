@@ -1,6 +1,12 @@
 import mongoose from "mongoose";
 
 const AdminContentSchema = new mongoose.Schema({
+    upperTitle:
+    {
+        type: String,
+        required: true,
+        default: 'Ready to Learn ?'
+    },
     title: {
         type: String,
         required: true,
@@ -27,7 +33,7 @@ const AdminContentSchema = new mongoose.Schema({
     updatedAt: {
         type: Date,
         default: Date.now
-    }
+    },
 });
 
 export const AdminContent = mongoose.model('AdminContent', AdminContentSchema);

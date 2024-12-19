@@ -30,6 +30,11 @@ const fileFilter = (req, file, cb) => {
         if (!file.mimetype.startsWith('video/')) {
             return cb(new Error('Only video files are allowed for video!'), false);
         }
+    } else if (file.fieldname.startsWith('sections[')) {
+        // Accept only image files for the section icons
+        if (!file.mimetype.startsWith('image/')) {
+            return cb(new Error('Only image files are allowed for the section icons!'), false);
+        }
     }
     cb(null, true);
 };

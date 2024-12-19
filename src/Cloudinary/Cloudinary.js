@@ -13,17 +13,41 @@ cloudinary.config({
 
 const ALLOWED_IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
 const ALLOWED_VIDEO_TYPES = ['.mp4', '.mov', '.avi', '.webm'];
+const ALLOWED_DOCUMENT_TYPES = [
+    '.pdf', '.doc', '.docx', '.xls', '.xlsx',
+    '.ppt', '.pptx', '.txt', '.csv', '.zip',
+    '.rar', '.7z'
+];
 
 const detectFileType = (filePath) => {
     const ext = path.extname(filePath).toLowerCase();
     if (ALLOWED_IMAGE_TYPES.includes(ext)) return "image";
     if (ALLOWED_VIDEO_TYPES.includes(ext)) return "video";
-    return null; // Return null instead of throwing error for more graceful handling
+    if (ALLOWED_DOCUMENT_TYPES.includes(ext)) return "raw";
+    return null;
 };
 
 const validateFile = (filePath, type) => {
     const ext = path.extname(filePath).toLowerCase();
-    const allowedTypes = type === "video" ? ALLOWED_VIDEO_TYPES : ALLOWED_IMAGE_TYPES;
+    let allowedTypes;
+    let maxSize;
+
+    switch (type) {
+        case "video":
+            allowedTypes = ALLOWED_VIDEO_TYPES;
+            maxSize = 100; // 100MB
+            break;
+        case "image":
+            allowedTypes = ALLOWED_IMAGE_TYPES;
+            maxSize = 10; // 10MB
+            break;
+        case "raw":
+            allowedTypes = ALLOWED_DOCUMENT_TYPES;
+            maxSize = 50; // 50MB for documents
+            break;
+        default:
+            return false;
+    }
 
     if (!allowedTypes.includes(ext)) {
         console.log(`File validation failed: ${ext} not in allowed types for ${type}`);
@@ -34,11 +58,8 @@ const validateFile = (filePath, type) => {
         const stats = fs.statSync(filePath);
         const fileSizeInMB = stats.size / (1024 * 1024);
 
-        if (type === "video" && fileSizeInMB > 100) {
-            console.log(`File validation failed: Video size ${fileSizeInMB}MB exceeds 100MB limit`);
-            return false;
-        } else if (type === "image" && fileSizeInMB > 10) {
-            console.log(`File validation failed: Image size ${fileSizeInMB}MB exceeds 10MB limit`);
+        if (fileSizeInMB > maxSize) {
+            console.log(`File validation failed: File size ${fileSizeInMB}MB exceeds ${maxSize}MB limit`);
             return false;
         }
 
@@ -68,13 +89,11 @@ const uploadOnCloudinary = async (file) => {
             size: file.size ? `${(file.size / (1024 * 1024)).toFixed(2)}MB` : 'Unknown'
         });
 
-        // File existence check
         if (!fs.existsSync(filePath)) {
             console.log(`Upload aborted: File not found at ${filePath}`);
             return null;
         }
 
-        // Detect file type
         const type = detectFileType(filePath);
         console.log(`Detected file type: ${type}`);
         if (!type) {
@@ -82,38 +101,42 @@ const uploadOnCloudinary = async (file) => {
             return null;
         }
 
-        // Validation
         if (!validateFile(filePath, type)) {
             console.log(`Upload aborted: File validation failed for ${file.originalname}`);
             return null;
         }
 
-        // Prepare upload options for Cloudinary
+        // Prepare upload options based on file type
         const uploadOptions = {
-            resource_type: type === "video" ? "video" : "image",
-            folder: type === "video" ? "course_videos" : "course_thumbnails",
+            resource_type: type === "raw" ? "raw" : type,
+            folder: (() => {
+                switch (type) {
+                    case "video": return "course_videos";
+                    case "image": return "course_thumbnails";
+                    case "raw": return "course_documents";
+                    default: return "miscellaneous";
+                }
+            })(),
             ...(type === "video" ? {
                 chunk_size: 6000000,
                 eager: [{ format: 'mp4', quality: 'auto' }],
                 eager_async: true
-            } : {
+            } : {}),
+            ...(type === "image" ? {
                 transformation: [
                     { width: 1280, height: 720, crop: "fill", quality: "auto" }
                 ]
-            })
+            } : {})
         };
 
         console.log("Starting Cloudinary upload with options:", uploadOptions);
 
-        // Upload to Cloudinary
         uploadResult = await cloudinary.uploader.upload(filePath, uploadOptions);
         console.log("Upload successful:", {
             publicId: uploadResult.public_id,
             url: uploadResult.secure_url,
             resourceType: uploadResult.resource_type
         });
-
-
 
         return uploadResult;
 
@@ -135,7 +158,6 @@ const uploadOnCloudinary = async (file) => {
         throw new Error(`Upload failed: ${error.message}`);
 
     } finally {
-        // Cleanup temporary file
         if (filePath && fs.existsSync(filePath)) {
             try {
                 fs.unlinkSync(filePath);
@@ -150,6 +172,5 @@ const uploadOnCloudinary = async (file) => {
         console.log("=== Upload process complete ===\n");
     }
 };
-
 
 export { uploadOnCloudinary };

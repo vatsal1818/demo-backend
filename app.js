@@ -23,12 +23,16 @@ import cloudinary from "cloudinary"
 import { Purchase } from "./src/models/Purchase.models.js";
 import { calculateExpiryDate } from "./src/utils/Helper.js";
 import { AdminContent } from "./src/models/AdminContent.models.js";
-import { AboutUs, WhyChooseUs } from "./src/models/AboutUs.models.js";
+import { AboutUs, AboutUs2 } from "./src/models/AboutUs.models.js";
 import { Testimonial } from "./src/models/Testimonials.models.js";
 import { Video } from "./src/models/ShortVideo.models.js";
 import { Banner } from "./src/models/Banner.models.js";
 import nodemailer from "nodemailer";
 import { Comment } from "./src/models/Comment.models.js";
+import { Coupon } from "./src/models/CouponCode.models.js";
+import { Contact_Us } from "./src/models/Contact-Us.models.js";
+import { SocialStats } from "./src/models/SocialStats.models.js";
+import { AdminPage2 } from "./src/models/AdminContent2.models.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1155,97 +1159,115 @@ app.put('/updateDailyChargesForAllUsers', async (req, res) => {
 });
 
 // COURSES
-app.post("/api/courses", upload.single('image'), async (req, res) => {
-    try {
-        const { courseName, price, expiryDate, validityPeriod, courseDescription } = req.body;
-
-        const admin = await User.findOne({ role: 'admin' });
-        if (!admin) {
-            return res.status(403).json({
-                status: "error",
-                message: "Unauthorized access"
-            });
-        }
-
-        if (!courseName || !price || !expiryDate || !validityPeriod || !courseDescription) {
-            return res.status(400).json({
-                status: "error",
-                message: "Course name, price, expiry date, and validity period are required"
-            });
-        }
-
-        // Check if image was uploaded
-        if (!req.file) {
-            return res.status(400).json({
-                status: "error",
-                message: "Image is required"
-            });
-        }
-
-        // Upload to Cloudinary
-        let courseThumbnailUrl;
+app.post("/api/courses",
+    upload.fields([
+        { name: 'thumbnail', maxCount: 1 },
+        { name: 'video', maxCount: 1 }
+    ]),
+    async (req, res) => {
         try {
-            const result = await uploadOnCloudinary(req.file);
-            courseThumbnailUrl = result.secure_url;
-        } catch (uploadError) {
-            console.error("Error uploading to Cloudinary:", uploadError);
-            return res.status(500).json({
+            const { courseName, price, offerPrice, expiryDate, validityPeriod, courseDescription } = req.body;
+            const admin = await User.findOne({ role: 'admin' });
+            if (!admin) {
+                return res.status(403).json({
+                    status: "error",
+                    message: "Unauthorized access"
+                });
+            }
+
+            if (!courseName || !price || !expiryDate || !validityPeriod || !courseDescription) {
+                return res.status(400).json({
+                    status: "error",
+                    message: "Course name, price, expiry date, and validity period are required"
+                });
+            }
+
+            // Check if image was uploaded
+            if (!req.files) {
+                return res.status(400).json({
+                    status: "error",
+                    message: "Image is required"
+                });
+            }
+
+            // Upload to Cloudinary
+            let courseThumbnailUrl, courseVideoUrl;
+            try {
+                // const result = await uploadOnCloudinary(req.file);
+                // courseThumbnailUrl = result.secure_url;
+
+                const courseThumbnailResponse = req.files.thumbnail && req.files.thumbnail.length > 0
+                    ? await uploadOnCloudinary(req.files.thumbnail[0])
+                    : undefined;
+                courseThumbnailUrl = courseThumbnailResponse?.secure_url;
+
+                const courseVideoResponse = req.files.video && req.files.video.length > 0
+                    ? await uploadOnCloudinary(req.files.video[0])
+                    : undefined;
+                courseVideoUrl = courseVideoResponse?.secure_url;
+
+            } catch (uploadError) {
+                console.error("Error uploading to Cloudinary:", uploadError);
+                return res.status(500).json({
+                    status: "error",
+                    message: "Error uploading image to Cloudinary",
+                    error: uploadError.message
+                });
+            }
+
+
+            const expiry = new Date(expiryDate);
+            if (isNaN(expiry.getTime()) || expiry < new Date()) {
+                return res.status(400).json({
+                    status: "error",
+                    message: "Invalid expiry date. Date must be in the future."
+                });
+            }
+
+            // Validate validity period
+            if (!validityPeriod.duration || !validityPeriod.unit) {
+                return res.status(400).json({
+                    status: "error",
+                    message: "Invalid validity period"
+                });
+            }
+
+            const course = new Course({
+                courseName,
+                courseDescription,
+                price: parseFloat(price),
+                offerPrice: offerPrice ? parseFloat(offerPrice) : undefined, // Optional field
+                expiryDate: expiry,
+                validityPeriod,
+                courseThumbnailUrl,
+                courseVideoUrl,
+                createdBy: admin,
+                status: 'draft',
+                content: []
+            });
+
+            const savedCourse = await course.save();
+
+            res.status(201).json({
+                status: "success",
+                data: savedCourse,
+                courseId: course._id,
+                message: "Course created successfully"
+            });
+
+        } catch (error) {
+            console.error("Error creating course:", error);
+            res.status(500).json({
                 status: "error",
-                message: "Error uploading image to Cloudinary",
-                error: uploadError.message
+                message: "Error creating course"
             });
         }
-
-        const expiry = new Date(expiryDate);
-        if (isNaN(expiry.getTime()) || expiry < new Date()) {
-            return res.status(400).json({
-                status: "error",
-                message: "Invalid expiry date. Date must be in the future."
-            });
-        }
-
-        // Validate validity period
-        if (!validityPeriod.duration || !validityPeriod.unit) {
-            return res.status(400).json({
-                status: "error",
-                message: "Invalid validity period"
-            });
-        }
-
-        const course = new Course({
-            courseName,
-            courseDescription,
-            price: parseFloat(price),
-            expiryDate: expiry,
-            validityPeriod,
-            courseThumbnailUrl,
-            createdBy: admin,
-            status: 'draft',
-            content: []
-        });
-
-        const savedCourse = await course.save();
-
-        res.status(201).json({
-            status: "success",
-            data: savedCourse,
-            courseId: course._id,
-            message: "Course created successfully"
-        });
-
-    } catch (error) {
-        console.error("Error creating course:", error);
-        res.status(500).json({
-            status: "error",
-            message: "Error creating course"
-        });
-    }
-});
+    });
 
 app.get("/api/courses", async (req, res) => {
     try {
         const courses = await Course.find()
-            .select('courseName price status expiryDate validityPeriod courseDescription courseThumbnailUrl') // Added expiryDate to selection
+            .select('_id courseName price offerPrice status expiryDate validityPeriod courseDescription courseThumbnailUrl') // Added expiryDate to selection
             .sort({ createdAt: -1 });
 
         res.status(200).json({
@@ -1260,6 +1282,8 @@ app.get("/api/courses", async (req, res) => {
         });
     }
 });
+
+
 
 app.post("/api/courses/:courseId/content",
     upload.fields([
@@ -1347,110 +1371,129 @@ app.post("/api/courses/:courseId/content",
     }
 );
 
-app.put("/api/courses/:courseId", upload.single('image'), async (req, res) => {
-    try {
-        const { courseId } = req.params;
-        const { courseName, price, expiryDate, validityPeriod, courseDescription } = req.body;
+app.put("/api/courses/:courseId",
+    upload.fields([
+        { name: 'thumbnail', maxCount: 1 },
+        { name: 'video', maxCount: 1 }
+    ]),
+    async (req, res) => {
+        try {
+            const { courseId } = req.params;
+            const { courseName, price, offerPrice, expiryDate, validityPeriod, courseDescription } = req.body;
 
-        // Validate admin access
-        const admin = await User.findOne({ role: 'admin' });
-        if (!admin) {
-            return res.status(403).json({
-                status: "error",
-                message: "Unauthorized access"
-            });
-        }
-
-        // Input validation
-        if (!courseName || !price || !expiryDate || !validityPeriod || !courseDescription) {
-            return res.status(400).json({
-                status: "error",
-                message: "Course name, price, expiry date, and validity period are required"
-            });
-        }
-
-        if (isNaN(price) || parseFloat(price) < 0) {
-            return res.status(400).json({
-                status: "error",
-                message: "Invalid price format"
-            });
-        }
-
-        // Validate expiry date
-        const expiryDateObj = new Date(expiryDate);
-        if (isNaN(expiryDateObj.getTime())) {
-            return res.status(400).json({
-                status: "error",
-                message: "Invalid expiry date format"
-            });
-        }
-
-        // Validate validity period
-        if (!validityPeriod.duration || !validityPeriod.unit ||
-            !["days", "months", "years"].includes(validityPeriod.unit) ||
-            parseInt(validityPeriod.duration) <= 0) {
-            return res.status(400).json({
-                status: "error",
-                message: "Invalid validity period"
-            });
-        }
-
-        // Prepare update object
-        const updateData = {
-            courseName,
-            courseDescription,
-            price: parseFloat(price),
-            expiryDate: expiryDateObj,
-            validityPeriod: {
-                duration: parseInt(validityPeriod.duration),
-                unit: validityPeriod.unit
+            // Validate admin access
+            const admin = await User.findOne({ role: 'admin' });
+            if (!admin) {
+                return res.status(403).json({
+                    status: "error",
+                    message: "Unauthorized access"
+                });
             }
-        };
 
-        // Handle thumbnail upload if a new image is provided
-        if (req.file) {
+            // Input validation
+            if (!courseName || !price || !expiryDate || !validityPeriod || !courseDescription) {
+                return res.status(400).json({
+                    status: "error",
+                    message: "Course name, price, expiry date, and validity period are required"
+                });
+            }
+
+            if (isNaN(price) || parseFloat(price) < 0) {
+                return res.status(400).json({
+                    status: "error",
+                    message: "Invalid price format"
+                });
+            }
+
+            // Validate expiry date
+            const expiry = new Date(expiryDate);
+            if (isNaN(expiry.getTime()) || expiry < new Date()) {
+                return res.status(400).json({
+                    status: "error",
+                    message: "Invalid expiry date. Date must be in the future."
+                });
+            }
+
+            // Validate validity period
+            if (!validityPeriod.duration || !validityPeriod.unit ||
+                !["days", "months", "years"].includes(validityPeriod.unit) ||
+                parseInt(validityPeriod.duration) <= 0) {
+                return res.status(400).json({
+                    status: "error",
+                    message: "Invalid validity period"
+                });
+            }
+
+            // Prepare update object
+            const updateData = {
+                courseName,
+                courseDescription,
+                price: parseFloat(price),
+                offerPrice: offerPrice ? parseFloat(offerPrice) : undefined,
+                expiryDate: expiry,
+                validityPeriod: {
+                    duration: parseInt(validityPeriod.duration),
+                    unit: validityPeriod.unit
+                }
+            };
+
+            // Upload to Cloudinary
+            let courseThumbnailUrl, courseVideoUrl;
             try {
-                // Upload to Cloudinary
-                const result = await uploadOnCloudinary(req.file);
-                updateData.courseThumbnailUrl = result.secure_url;
+                // Handle thumbnail upload
+                const courseThumbnailResponse = req.files.thumbnail && req.files.thumbnail.length > 0
+                    ? await uploadOnCloudinary(req.files.thumbnail[0])
+                    : undefined;
+                courseThumbnailUrl = courseThumbnailResponse?.secure_url;
+
+                // Handle video upload
+                const courseVideoResponse = req.files.video && req.files.video.length > 0
+                    ? await uploadOnCloudinary(req.files.video[0])
+                    : undefined;
+                courseVideoUrl = courseVideoResponse?.secure_url;
+
+                // Add URLs to update data if present
+                if (courseThumbnailUrl) updateData.courseThumbnailUrl = courseThumbnailUrl;
+                if (courseVideoUrl) updateData.courseVideoUrl = courseVideoUrl;
+
             } catch (uploadError) {
                 console.error("Error uploading to Cloudinary:", uploadError);
                 return res.status(500).json({
                     status: "error",
-                    message: "Error uploading image to Cloudinary",
+                    message: "Error uploading files to Cloudinary",
                     error: uploadError.message
                 });
             }
-        }
 
-        // Update course
-        const updatedCourse = await Course.findByIdAndUpdate(
-            courseId,
-            updateData,
-            { new: true }
-        );
+            // Update course
+            const updatedCourse = await Course.findByIdAndUpdate(
+                courseId,
+                updateData,
+                { new: true }
+            );
 
-        if (!updatedCourse) {
-            return res.status(404).json({
+            if (!updatedCourse) {
+                return res.status(404).json({
+                    status: "error",
+                    message: "Course not found"
+                });
+            }
+
+            res.status(200).json({
+                status: "success",
+                data: updatedCourse,
+                courseId: updatedCourse._id,
+                message: "Course updated successfully"
+            });
+
+        } catch (error) {
+            console.error("Error updating course:", error);
+            res.status(500).json({
                 status: "error",
-                message: "Course not found"
+                message: "Error updating course"
             });
         }
-
-        res.status(200).json({
-            status: "success",
-            data: updatedCourse,
-            message: "Course updated successfully"
-        });
-
-    } catch (error) {
-        console.error("Error updating course:", error);
-        res.status(500).json({
-            status: "error",
-            message: "Error updating course"
-        });
-    }
-});
+    });
 
 app.get("/api/courses/:courseId", async (req, res) => {
     try {
@@ -1487,8 +1530,10 @@ app.get("/api/courses/:courseId", async (req, res) => {
 app.post("/api/courses/:courseId/purchase", VerifyJWT, async (req, res) => {
     try {
         const { courseId } = req.params;
+        const { couponCode } = req.body;
         const userId = req.user._id;
 
+        // Check for existing purchase
         const existingPurchase = await Purchase.findOne({
             user: userId,
             course: courseId,
@@ -1502,14 +1547,68 @@ app.post("/api/courses/:courseId/purchase", VerifyJWT, async (req, res) => {
             });
         }
 
+        // Get course details
+        const course = await Course.findById(courseId);
+        if (!course) {
+            return res.status(404).json({
+                status: "error",
+                message: "Course not found"
+            });
+        }
+
+        let finalPrice = course.offerPrice || course.price;
+        let appliedCoupon = null;
+
+        // Apply coupon if provided
+        if (couponCode) {
+            const coupon = await Coupon.findOne({
+                code: couponCode,
+                isActive: true,
+                expiryDate: { $gt: new Date() }
+            });
+
+            if (!coupon) {
+                return res.status(400).json({
+                    status: "error",
+                    message: "Invalid or expired coupon"
+                });
+            }
+
+            if (coupon.usageLimit && coupon.usageCount >= coupon.usageLimit) {
+                return res.status(400).json({
+                    status: "error",
+                    message: "Coupon usage limit reached"
+                });
+            }
+
+            // Calculate discount
+            let discountAmount = (finalPrice * coupon.discount) / 100;
+
+            finalPrice -= discountAmount;
+            appliedCoupon = coupon;
+
+            // Increment coupon usage
+            coupon.usageCount += 1;
+            await coupon.save();
+        }
+
         const purchaseDate = new Date();
         const expiryDate = new Date(purchaseDate);
+        // Add your logic for setting expiry date
 
+        // Create purchase record
         const purchase = new Purchase({
             user: userId,
             course: courseId,
             purchaseDate,
             expiryDate,
+            originalPrice: course.price,
+            finalPrice,
+            couponApplied: appliedCoupon ? {
+                code: appliedCoupon.code,
+                discount: appliedCoupon.discount,
+                discountAmount: course.price - finalPrice
+            } : null,
             status: 'completed'
         });
 
@@ -1886,7 +1985,6 @@ app.patch('/api/admin/purchases/toggle-all-status', async (req, res) => {
     }
 });
 
-
 // example 
 
 //Home page
@@ -1901,7 +1999,7 @@ app.get('/api/homepage-content', async (req, res) => {
 
 app.post("/api/homepage-content", upload.single('image'), async (req, res) => {
     try {
-        const { title, paragraph, button } = req.body;
+        const { upperTitle, title, paragraph, button } = req.body;
 
 
         // Check if image was uploaded
@@ -1930,6 +2028,7 @@ app.post("/api/homepage-content", upload.single('image'), async (req, res) => {
         const content = await AdminContent.findOneAndUpdate(
             {}, // Find first document
             {
+                upperTitle,
                 title,
                 paragraph,
                 button,
@@ -1957,31 +2056,189 @@ app.post("/api/homepage-content", upload.single('image'), async (req, res) => {
         });
     }
 });
+// Home page 2 (why choose us)
+app.get('/api/admin-page-2', async (req, res) => {
+    try {
+        const content = await AdminPage2.findOne();
+        res.json(content);
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch content' });
+    }
+});
 
+app.post('/api/admin-page-2', upload.fields([
+    { name: 'image', maxCount: 1 },
+    { name: 'sections[0].iconImage', maxCount: 1 },
+    { name: 'sections[1].iconImage', maxCount: 1 },
+    { name: 'sections[2].iconImage', maxCount: 1 },
+    { name: 'sections[3].iconImage', maxCount: 1 }
+]), async (req, res) => {
+    try {
+        const { title, paragraph, sections } = req.body;
+
+        // Access image file directly
+        const imageFile = req.files['image'] ? req.files['image'][0] : null;
+
+        // Access section icon images
+        const sectionIconFiles = [
+            req.files['sections[0].iconImage'] ? req.files['sections[0].iconImage'][0] : null,
+            req.files['sections[1].iconImage'] ? req.files['sections[1].iconImage'][0] : null,
+            req.files['sections[2].iconImage'] ? req.files['sections[2].iconImage'][0] : null,
+            req.files['sections[3].iconImage'] ? req.files['sections[3].iconImage'][0] : null
+        ];
+
+        // Upload image to Cloudinary
+        const imageUrl = imageFile ? (await uploadOnCloudinary(imageFile)).secure_url : '';
+
+        // Upload section icons to Cloudinary
+        const sectionIcons = sectionIconFiles.map(async (file, index) => {
+            if (!file) return null;
+            try {
+                const result = await uploadOnCloudinary(file);
+                return result?.secure_url || null;
+            } catch (error) {
+                console.error(`Error uploading icon ${index}:`, error.message);
+                return null;
+            }
+        });
+        const iconUrls = await Promise.all(sectionIcons);
+
+        // Save content to database
+        const parsedSections = JSON.parse(sections).map((section, index) => ({
+            ...section,
+            iconImage: iconUrls[index] || section.iconImage || ''
+        }));
+
+        // Save content to the database
+        const content = await AdminPage2.findOneAndUpdate(
+            {}, // Find the first document
+            {
+                imageUrl,
+                title,
+                paragraph,
+                sections: parsedSections,
+                updatedAt: new Date()
+            },
+            { new: true, upsert: true }
+        );
+
+        res.status(200).json({
+            status: "success",
+            data: content,
+            message: "Content updated successfully"
+        });
+    } catch (error) {
+        console.error("Error updating content:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error updating content",
+            error: error.message
+        });
+    }
+});
+
+// Social Stats 
+app.get('/api/social-stats', async (req, res) => {
+    try {
+        const stats = await SocialStats.findOne();
+
+        // If no stats exist, create a default document
+        if (!stats) {
+            const defaultStats = new SocialStats();
+            await defaultStats.save();
+            return res.json(defaultStats);
+        }
+
+        res.json(stats);
+    } catch (error) {
+        res.status(500).json({
+            status: "error",
+            message: 'Failed to fetch social stats',
+            error: error.message
+        });
+    }
+});
+
+app.post("/api/social-stats", async (req, res) => {
+    try {
+        const {
+            youtube,
+            instagram,
+            telegram,
+            playstore
+        } = req.body;
+
+        // Update or create the social stats document
+        const stats = await SocialStats.findOneAndUpdate(
+            {}, // Find first document
+            {
+                youtube: {
+                    title: youtube.title || 'YouTube Subscribers',
+                    count: youtube.count || 0
+                },
+                instagram: {
+                    title: instagram.title || 'Instagram Followers',
+                    count: instagram.count || 0
+                },
+                telegram: {
+                    title: telegram.title || 'Telegram Subscribers',
+                    count: telegram.count || 0
+                },
+                playstore: {
+                    title: playstore.title || 'Play Store Downloads',
+                    count: playstore.count || 0
+                },
+                updatedAt: new Date()
+            },
+            {
+                new: true,
+                upsert: true
+            }
+        );
+
+        res.status(200).json({
+            status: "success",
+            data: stats,
+            message: "Social stats updated successfully"
+        });
+
+    } catch (error) {
+        console.error("Error updating social stats:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error updating social stats",
+            error: error.message
+        });
+    }
+});
+
+// testimonials
 app.post("/api/testimonials", upload.none(), async (req, res) => {
     try {
         console.log('Received form-data:', req.body);
 
         // Validate the form-data
-        const { name, comment } = req.body;
+        const { name, comment, profession, courseName } = req.body;
 
-        if (!name || !comment) {
+        if (!name || !comment || !profession || !courseName) {
             return res.status(400).json({
                 status: "error",
-                message: "Name and comment are required fields",
+                message: "Name, comment, profession, and course are required fields",
             });
         }
 
-        if (name.trim() === '' || comment.trim() === '') {
+        if (name.trim() === '' || comment.trim() === '' || profession.trim() === '') {
             return res.status(400).json({
                 status: "error",
-                message: "Name and comment cannot be empty",
+                message: "Name, comment, and profession cannot be empty",
             });
         }
 
         const newTestimonial = await Testimonial.create({
             name: name.trim(),
             comment: comment.trim(),
+            profession: profession.trim(),
+            courseName: courseName
         });
 
         res.status(201).json({
@@ -2014,20 +2271,20 @@ app.post("/api/testimonials", upload.none(), async (req, res) => {
 app.put("/api/testimonials/:id", async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, comment } = req.body;
+        const { name, comment, profession, courseName } = req.body;
 
         // Validate input
-        if (!name || !comment) {
+        if (!name || !comment || !profession || !courseName) {
             return res.status(400).json({
                 status: "error",
-                message: "Name and comment are required fields",
+                message: "Name, comment, profession, and course are required fields",
             });
         }
 
-        if (name.trim() === "" || comment.trim() === "") {
+        if (name.trim() === "" || comment.trim() === "" || profession.trim() === "") {
             return res.status(400).json({
                 status: "error",
-                message: "Name and comment cannot be empty",
+                message: "Name, comment, and profession cannot be empty",
             });
         }
 
@@ -2036,6 +2293,8 @@ app.put("/api/testimonials/:id", async (req, res) => {
             {
                 name: name.trim(),
                 comment: comment.trim(),
+                profession: profession.trim(),
+                courseName: courseName
             },
             { new: true, runValidators: true }
         );
@@ -2074,6 +2333,70 @@ app.put("/api/testimonials/:id", async (req, res) => {
     }
 });
 
+// Get testimonials with course population
+app.get("/api/testimonials", async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+
+        const testimonials = await Testimonial
+            .find()
+            .populate('courseName', 'courseName')  // Populate course name
+            .sort({ createdAt: -1 })
+            .skip((page - 1) * limit)
+            .limit(limit);
+
+        const total = await Testimonial.countDocuments();
+
+        res.status(200).json({
+            status: "success",
+            data: {
+                testimonials,
+                currentPage: page,
+                totalPages: Math.ceil(total / limit),
+                totalTestimonials: total
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            status: "error",
+            message: "Error fetching testimonials"
+        });
+    }
+});
+
+// Get testimonials with course population
+app.get("/api/testimonials", async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+
+        const testimonials = await Testimonial
+            .find()
+            .populate('courseName', 'name')  // Populate course name
+            .sort({ createdAt: -1 })
+            .skip((page - 1) * limit)
+            .limit(limit);
+
+        const total = await Testimonial.countDocuments();
+
+        res.status(200).json({
+            status: "success",
+            data: {
+                testimonials,
+                currentPage: page,
+                totalPages: Math.ceil(total / limit),
+                totalTestimonials: total
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            status: "error",
+            message: "Error fetching testimonials"
+        });
+    }
+});
+
 app.delete("/api/testimonials/:id", async (req, res) => {
     try {
         const { id } = req.params;
@@ -2103,36 +2426,6 @@ app.delete("/api/testimonials/:id", async (req, res) => {
     }
 });
 
-app.get("/api/testimonials", async (req, res) => {
-    try {
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 10;
-
-        const testimonials = await Testimonial
-            .find()
-            .sort({ createdAt: -1 })
-            .skip((page - 1) * limit)
-            .limit(limit);
-
-        const total = await Testimonial.countDocuments();
-
-        res.status(200).json({
-            status: "success",
-            data: {
-                testimonials,
-                currentPage: page,
-                totalPages: Math.ceil(total / limit),
-                totalTestimonials: total
-            }
-        });
-    } catch (error) {
-        res.status(500).json({
-            status: "error",
-            message: "Error fetching testimonials"
-        });
-    }
-});
-
 //About Page
 app.get('/api/about-us-content', async (req, res) => {
     try {
@@ -2145,11 +2438,13 @@ app.get('/api/about-us-content', async (req, res) => {
 
 app.post("/api/about-us-content", upload.single('image'), async (req, res) => {
     try {
-        const { title, paragraph, button } = req.body;
+        const { title, paragraph, button, experience, experienceSpan } = req.body;
 
         let updateData = {
             title,
             paragraph,
+            experience,
+            experienceSpan,
             button,
             updatedAt: new Date()
         };
@@ -2192,27 +2487,44 @@ app.post("/api/about-us-content", upload.single('image'), async (req, res) => {
     }
 });
 
-// Why Choose Us routes
-app.get('/api/why-choose-us-content', async (req, res) => {
+// about us 2 
+app.get('/api/about-us2-content', async (req, res) => {
     try {
-        const content = await WhyChooseUs.findOne();
+        const content = await AboutUs2.findOne();
         res.json(content);
     } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch Why Choose Us content' });
+        res.status(500).json({ error: 'Failed to fetch About Us content' });
     }
 });
 
-app.post("/api/why-choose-us-content", async (req, res) => {
+app.post("/api/about-us2-content", upload.single('image'), async (req, res) => {
     try {
-        const { title, reasons } = req.body;
+        const { title, titleSpan, paragraph, button } = req.body;
 
-        const content = await WhyChooseUs.findOneAndUpdate(
+        let updateData = {
+            title,
+            titleSpan,
+            paragraph,
+            button,
+            updatedAt: new Date()
+        };
+
+        if (req.file) {
+            try {
+                const result = await uploadOnCloudinary(req.file);
+                updateData.imageUrl = result.secure_url;
+            } catch (uploadError) {
+                return res.status(500).json({
+                    status: "error",
+                    message: "Error uploading image to Cloudinary",
+                    error: uploadError.message
+                });
+            }
+        }
+
+        const content = await AboutUs2.findOneAndUpdate(
             {},
-            {
-                title,
-                reasons,
-                updatedAt: new Date()
-            },
+            updateData,
             {
                 new: true,
                 upsert: true
@@ -2222,18 +2534,20 @@ app.post("/api/why-choose-us-content", async (req, res) => {
         res.status(200).json({
             status: "success",
             data: content,
-            message: "Why Choose Us content updated successfully"
+            message: "About Us content updated successfully"
         });
 
     } catch (error) {
-        console.error("Error updating Why Choose Us content:", error);
+        console.error("Error updating About Us content:", error);
         res.status(500).json({
             status: "error",
-            message: "Error updating Why Choose Us content",
+            message: "Error updating About Us content",
             error: error.message
         });
     }
 });
+
+// Podcast
 
 // shorst video 
 app.post('/api/admin/video', async (req, res) => {
@@ -2398,6 +2712,7 @@ app.delete("/api/banners/:id", async (req, res) => {
     }
 });
 
+
 // mail sending
 const transporter = nodemailer.createTransport({
     service: 'gmail', // Use your email provider (e.g., Gmail, Outlook)
@@ -2435,13 +2750,16 @@ app.post('/send-email', (req, res) => {
 });
 
 // User Comments 
-app.get('/api/courses/:courseId/comments', VerifyJWT, async (req, res) => {
+app.get('/api/courses/:courseId/content/:contentId/comments', VerifyJWT, async (req, res) => {
     try {
         // Find admin user
         const admin = await User.findOne({ role: 'admin' });
 
         // Build query based on whether the requester is admin
-        const query = { course: req.params.courseId };
+        const query = {
+            course: req.params.courseId,
+            courseContent: req.params.contentId
+        };
 
         // If current user is admin, show all comments
         // If not admin, show only their own comments
@@ -2451,7 +2769,6 @@ app.get('/api/courses/:courseId/comments', VerifyJWT, async (req, res) => {
 
         const comments = await Comment.find(query)
             .populate('user', 'username email role')
-            .populate('course', 'courseName')
             .sort({ createdAt: -1 });
 
         res.json({
@@ -2468,8 +2785,59 @@ app.get('/api/courses/:courseId/comments', VerifyJWT, async (req, res) => {
     }
 });
 
-// Modified DELETE route to use admin check
-app.delete('/api/courses/:courseId/comments/:commentId', VerifyJWT, async (req, res) => {
+// POST route for adding a comment to a specific course content
+app.post('/api/courses/:courseId/content/:contentId/comments', VerifyJWT, async (req, res) => {
+    try {
+        const admin = await User.findOne({ role: 'admin' });
+
+        // Verify course and content exist
+        const course = await Course.findById(req.params.courseId);
+        if (!course) {
+            return res.status(404).json({
+                success: false,
+                error: 'Course not found'
+            });
+        }
+
+        // Check if the specific content exists in the course
+        const contentExists = course.content.some(
+            content => content._id.toString() === req.params.contentId
+        );
+        if (!contentExists) {
+            return res.status(404).json({
+                success: false,
+                error: 'Course content not found'
+            });
+        }
+
+        const comment = new Comment({
+            course: req.params.courseId,
+            courseContent: req.params.contentId,
+            user: req.user._id,
+            content: req.body.content
+        });
+
+        await comment.save();
+
+        const populatedComment = await Comment.findById(comment._id)
+            .populate('user', 'username email');
+
+        res.status(201).json({
+            success: true,
+            data: populatedComment,
+            isAdmin: req.user._id.toString() === admin._id.toString()
+        });
+    } catch (error) {
+        console.error('Comment creation error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// DELETE route for a specific comment
+app.delete('/api/courses/:courseId/content/:contentId/comments/:commentId', VerifyJWT, async (req, res) => {
     try {
         const comment = await Comment.findById(req.params.commentId);
         const admin = await User.findOne({ role: 'admin' });
@@ -2478,6 +2846,15 @@ app.delete('/api/courses/:courseId/comments/:commentId', VerifyJWT, async (req, 
             return res.status(404).json({
                 success: false,
                 error: 'Comment not found'
+            });
+        }
+
+        // Verify the comment belongs to the specified course and content
+        if (comment.course.toString() !== req.params.courseId ||
+            comment.courseContent.toString() !== req.params.contentId) {
+            return res.status(403).json({
+                success: false,
+                error: 'Invalid comment for this course content'
             });
         }
 
@@ -2505,37 +2882,618 @@ app.delete('/api/courses/:courseId/comments/:commentId', VerifyJWT, async (req, 
     }
 });
 
-// POST route with admin check
-app.post('/api/courses/:courseId/comments', VerifyJWT, async (req, res) => {
+// Admin reply 
+// Backend route for admin reply
+app.post('/api/courses/:courseId/content/:contentId/comments/:commentId/reply', VerifyJWT, async (req, res) => {
     try {
+        // Verify admin
         const admin = await User.findOne({ role: 'admin' });
+        if (!admin) {
+            return res.status(500).json({
+                success: false,
+                error: 'Admin user not found'
+            });
+        }
 
-        const comment = new Comment({
-            course: req.params.courseId,
-            user: req.user._id,
-            content: req.body.content
+        if (req.user._id.toString() !== admin._id.toString()) {
+            return res.status(403).json({
+                success: false,
+                error: 'Only admin can reply to comments'
+            });
+        }
+
+        // Validate input parameters
+        const { courseId, contentId, commentId } = req.params;
+        const { content } = req.body;
+
+        console.log(courseId, contentId, commentId);
+
+        // Validate parameters
+        if (!courseId || !contentId || !commentId || !content) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing required parameters'
+            });
+        }
+
+        // Find the original comment with explicit checks
+        const comment = await Comment.findOne({
+            _id: commentId,
+            course: courseId,
+            courseContent: contentId
         });
+
+        if (!comment) {
+            return res.status(404).json({
+                success: false,
+                error: 'Comment not found'
+            });
+        }
+
+        // Add admin reply
+        comment.adminReply = {
+            content: content,
+            repliedAt: new Date(),
+            repliedBy: req.user._id
+        };
 
         await comment.save();
 
+        // Populate the reply with admin details
         const populatedComment = await Comment.findById(comment._id)
-            .populate('user', 'username email')
-            .populate('course', 'courseName');
+            .populate('user', 'username')
+            .populate('adminReply.repliedBy', 'username');
 
-        // Include isAdmin flag in response
         res.status(201).json({
             success: true,
-            data: populatedComment,
-            isAdmin: req.user._id.toString() === admin._id.toString()
+            data: populatedComment
         });
     } catch (error) {
-        console.error('Comment creation error:', error);
+        console.error('Admin reply error:', error);
         res.status(500).json({
             success: false,
             error: error.message
         });
     }
 });
+
+app.get('/api/user/check-admin', VerifyJWT, async (req, res) => {
+    try {
+        const admin = await User.findOne({ role: 'admin' });
+
+        // Check if the current user is the admin
+        const isAdmin = req.user._id.toString() === admin._id.toString();
+
+        res.json({
+            isAdmin: isAdmin
+        });
+    } catch (error) {
+        console.error('Error checking admin status:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Unable to verify admin status'
+        });
+    }
+});
+
+// Content Attachment
+app.post("/api/courses/:courseId/content/:contentId/attachments",
+    upload.array('attachments', 5),
+    async (req, res) => {
+        try {
+            const { courseId, contentId } = req.params;
+
+            // Validate user authorization
+            const admin = await User.findOne({ role: 'admin' });
+            if (!admin) {
+                return res.status(403).json({
+                    status: "error",
+                    message: "Unauthorized access"
+                });
+            }
+
+            // Find course and content
+            const course = await Course.findById(courseId);
+            if (!course) {
+                return res.status(404).json({
+                    status: "error",
+                    message: "Course not found"
+                });
+            }
+
+            const content = course.content.id(contentId);
+            if (!content) {
+                return res.status(404).json({
+                    status: "error",
+                    message: "Content not found"
+                });
+            }
+
+            // Check if files were uploaded
+            if (!req.files || req.files.length === 0) {
+                return res.status(400).json({
+                    status: "error",
+                    message: "No files uploaded"
+                });
+            }
+
+            // Process uploaded files
+            const processedFiles = req.files.map(file => ({
+                success: true,
+                fileName: file.originalname,
+                fileUrl: `/uploads/${file.filename}`, // URL path to access the file
+                fileType: file.mimetype,
+                fileSize: file.size,
+                uploadedAt: new Date()
+            }));
+
+            // Initialize attachments array if it doesn't exist
+            if (!content.attachments) {
+                content.attachments = [];
+            }
+
+            // Add processed files to content
+            content.attachments.push(...processedFiles);
+            await course.save();
+
+            res.status(201).json({
+                status: "success",
+                data: content,
+                successfulUploads: processedFiles,
+                message: "Attachments processed"
+            });
+
+        } catch (error) {
+            console.error("Error adding attachments:", error);
+            // If error occurs, attempt to clean up any uploaded files
+            if (req.files) {
+                req.files.forEach(file => {
+                    try {
+                        fs.unlinkSync(file.path);
+                    } catch (cleanupError) {
+                        console.error('Error cleaning up file:', cleanupError);
+                    }
+                });
+            }
+            res.status(500).json({
+                status: "error",
+                message: "Error adding attachments",
+                error: error.message
+            });
+        }
+    }
+);
+
+app.delete("/api/courses/:courseId/content/:contentId/attachments/:attachmentId",
+    async (req, res) => {
+        try {
+            const { courseId, contentId, attachmentId } = req.params;
+
+            const course = await Course.findById(courseId);
+            if (!course) {
+                return res.status(404).json({
+                    status: "error",
+                    message: "Course not found"
+                });
+            }
+
+            const content = course.content.id(contentId);
+            if (!content) {
+                return res.status(404).json({
+                    status: "error",
+                    message: "Content not found"
+                });
+            }
+
+            // Remove the attachment
+            content.attachments = content.attachments.filter(
+                attachment => attachment._id.toString() !== attachmentId
+            );
+
+            await course.save();
+
+            res.status(200).json({
+                status: "success",
+                message: "Attachment deleted successfully"
+            });
+
+        } catch (error) {
+            console.error("Error deleting attachment:", error);
+            res.status(500).json({
+                status: "error",
+                message: "Error deleting attachment",
+                error: error.message
+            });
+        }
+    }
+);
+
+// COUPON CODE
+
+const generateCouponCode = (length = 8) => {
+    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let result = '';
+    for (let i = 0; i < length; i++) {
+        result += characters.charAt(Math.floor(Math.random() * characters.length));
+    }
+    return result;
+};
+
+app.post('/api/coupons', async (req, res) => {
+    try {
+        const {
+            discountType = 'percentage',
+            discount,
+            expiryDays = 30,
+            usageLimit = null,
+            courseId
+        } = req.body;
+
+        // Add detailed logging
+        console.log('Received request body:', {
+            discountType,
+            discount,
+            expiryDays,
+            usageLimit,
+            courseId
+        });
+
+        // If courseId is 'all', set it to null to indicate global coupon
+        const finalCourseId = courseId === 'all' ? null : courseId;
+        console.log('Processed courseId:', finalCourseId);
+
+        // Validate discount
+        const parsedDiscount = Number(discount);
+        if (isNaN(parsedDiscount)) {
+            return res.status(400).json({
+                message: 'Invalid discount value'
+            });
+        }
+
+        // Validate course if specific course is selected
+        if (finalCourseId) {
+            const course = await Course.findById(finalCourseId);
+            if (!course) {
+                return res.status(400).json({
+                    message: 'Invalid course selected'
+                });
+            }
+        }
+
+        // Existing validation for discount
+        if (discountType === 'percentage' && (parsedDiscount < 0 || parsedDiscount > 100)) {
+            return res.status(400).json({
+                message: 'Percentage discount must be between 0 and 100'
+            });
+        }
+
+        if (discountType === 'fixed' && parsedDiscount <= 0) {
+            return res.status(400).json({
+                message: 'Fixed discount must be a positive number'
+            });
+        }
+
+        const code = generateCouponCode();
+        const expiryDate = new Date();
+        expiryDate.setDate(expiryDate.getDate() + expiryDays);
+
+        const coupon = new Coupon({
+            code,
+            discountType,
+            discount: parsedDiscount,
+            expiryDate,
+            usageLimit: usageLimit || undefined, // Convert empty string to undefined
+            courseId: finalCourseId
+        });
+
+        await coupon.save();
+        res.status(201).json(coupon);
+    } catch (error) {
+        console.error('Coupon creation error:', error);
+        res.status(400).json({
+            message: error.message,
+            stack: error.stack // Only for debugging
+        });
+    }
+});
+
+// Get all coupons (admin route)
+app.get('/api/coupons', async (req, res) => {
+    try {
+        const coupons = await Coupon.find();
+        res.json(coupons);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+});
+
+app.get("/api/coupons/course/:courseId", async (req, res) => {
+    try {
+        const { courseId } = req.params;
+
+        // Validate that the course exists
+        const course = await Course.findById(courseId);
+        if (!course) {
+            return res.status(404).json({
+                status: "error",
+                message: "Course not found"
+            });
+        }
+
+        // Find coupons for the specific course or global coupons
+        const coupons = await Coupon.find({
+            $or: [
+                { courseId: courseId },
+                { courseId: null }
+            ]
+        }).select('code discountType courseId discount expiryDate usageLimit isActive');
+
+        res.status(200).json({
+            status: "success",
+            data: coupons,
+            message: "Coupons retrieved successfully for the course"
+        });
+    } catch (error) {
+        console.error("Error fetching course coupons:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error fetching course coupons"
+        });
+    }
+});
+
+// Validate and apply coupon
+app.post('/api/validate-coupon', async (req, res) => {
+    try {
+        const { code, amount, courseId } = req.body;
+        const coupon = await Coupon.findOne({
+            code: code.toUpperCase(),
+            $or: [
+                { courseId: courseId }, // Specific course coupon
+                { courseId: null } // Global coupon
+            ]
+        });
+
+        if (!coupon) {
+            return res.status(404).json({ message: 'Invalid coupon code for this course' });
+        }
+
+        // Rest of the existing validation logic remains the same
+        if (!coupon.isActive) {
+            return res.status(400).json({ message: 'Coupon is inactive' });
+        }
+
+        if (coupon.expiryDate < new Date()) {
+            return res.status(400).json({ message: 'Coupon has expired' });
+        }
+
+        // Calculate discount amount logic remains the same
+        let discountAmount;
+        if (coupon.discountType === 'percentage') {
+            discountAmount = (amount * coupon.discount) / 100;
+        } else {
+            // Fixed discount
+            discountAmount = coupon.discount;
+        }
+
+        // Ensure discount doesn't exceed total amount
+        discountAmount = Math.min(discountAmount, amount);
+
+        res.json({
+            code: coupon.code,
+            discountType: coupon.discountType,
+            discount: coupon.discount,
+            discountAmount,
+            finalAmount: amount - discountAmount
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+});
+
+app.get("/api/coupons/available", VerifyJWT, async (req, res) => {
+    try {
+        const coupons = await Coupon.find({
+            isActive: true,
+            expiryDate: { $gt: new Date() },
+            $or: [
+                { usageLimit: null },
+                { $expr: { $lt: ["$usageCount", "$usageLimit"] } }
+            ]
+        }).select('code discount discountType expiryDate');
+
+        res.json(coupons);
+    } catch (error) {
+        console.error("Error fetching coupons:", error);
+        res.status(500).json({
+            status: "error",
+            message: "Error fetching coupons"
+        });
+    }
+});
+
+app.get('/api/coupons/:id', async (req, res) => {
+    try {
+        const coupon = await Coupon.findById(req.params.id);
+        if (!coupon) {
+            return res.status(404).json({ message: 'Coupon not found' });
+        }
+        res.json(coupon);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+});
+
+// Update a coupon
+app.patch('/api/coupons/:id', async (req, res) => {
+    try {
+        const {
+            discountType,
+            discount,
+            expiryDays,
+            usageLimit,
+            isActive,
+            courseId // New field
+        } = req.body;
+
+        const coupon = await Coupon.findById(req.params.id);
+        if (!coupon) {
+            return res.status(404).json({ message: 'Coupon not found' });
+        }
+
+        // If courseId is provided, validate the course
+        if (courseId) {
+            const course = await Course.findById(courseId);
+            if (!course) {
+                return res.status(400).json({ message: 'Invalid course selected' });
+            }
+            coupon.courseId = courseId;
+        }
+
+        // Existing validation and update logic remains the same
+        if (discountType && discount) {
+            if (discountType === 'percentage' && (discount < 0 || discount > 100)) {
+                return res.status(400).json({
+                    message: 'Percentage discount must be between 0 and 100'
+                });
+            }
+            if (discountType === 'fixed' && discount <= 0) {
+                return res.status(400).json({
+                    message: 'Fixed discount must be a positive number'
+                });
+            }
+        }
+
+        // Update other fields as before
+        if (discountType) coupon.discountType = discountType;
+        if (discount) coupon.discount = discount;
+        if (expiryDays) {
+            const expiryDate = new Date();
+            expiryDate.setDate(expiryDate.getDate() + expiryDays);
+            coupon.expiryDate = expiryDate;
+        }
+        if (usageLimit !== undefined) coupon.usageLimit = usageLimit;
+        if (isActive !== undefined) coupon.isActive = isActive;
+
+        const updatedCoupon = await coupon.save();
+        res.json(updatedCoupon);
+    } catch (error) {
+        res.status(400).json({ message: error.message });
+    }
+});
+
+// Delete a coupon
+app.delete('/api/coupons/:id', async (req, res) => {
+    try {
+        const coupon = await Coupon.findById(req.params.id);
+        if (!coupon) {
+            return res.status(404).json({ message: 'Coupon not found' });
+        }
+
+        await coupon.deleteOne();
+        res.json({ message: 'Coupon deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+});
+
+
+// Sidebar Link Toggler
+
+app.get('/api/users/:userId/link-states', async (req, res) => {
+    try {
+        const user = await User.findById(req.params.userId);
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+        res.json({ links: user.linkStates });
+    } catch (error) {
+        res.status(500).json({ message: "Error fetching user link states" });
+    }
+});
+
+// Update user-specific link state
+app.patch('/api/users/:userId/link-states/:linkName', async (req, res) => {
+    try {
+        const { userId, linkName } = req.params;
+        const { state } = req.body;
+
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ message: "User not found" });
+        }
+
+        if (!user.linkStates) {
+            user.linkStates = {
+                home: true,
+                chat: true,
+                alltrade: true,
+                courses: true,
+                myCourses: true
+            };
+        }
+
+        user.linkStates[linkName] = state;
+        await user.save();
+
+        res.json({ links: user.linkStates });
+    } catch (error) {
+        res.status(500).json({ message: "Error updating user link state" });
+    }
+});
+
+// Contact us text 
+
+app.get('/api/contact-us-content', async (req, res) => {
+    try {
+        const content = await Contact_Us.findOne();
+        res.json(content);
+    } catch (error) {
+        res.status(500).json({
+            status: 'error',
+            message: 'Failed to fetch Contact Us content',
+            error: error.message
+        });
+    }
+});
+
+// POST endpoint to update contact us content
+app.post('/api/contact-us-content', async (req, res) => {
+    try {
+        const { title, titleSpan, paragraph, email } = req.body;
+
+        const content = await Contact_Us.findOneAndUpdate(
+            {},
+            {
+                title,
+                titleSpan,
+                paragraph,
+                email,
+                updatedAt: new Date()
+            },
+            {
+                new: true,
+                upsert: true,
+                runValidators: true
+            }
+        );
+
+        res.status(200).json({
+            status: 'success',
+            data: content,
+            message: 'Contact Us content updated successfully'
+        });
+
+    } catch (error) {
+        console.error('Error updating Contact Us content:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Error updating Contact Us content',
+            error: error.message
+        });
+    }
+});
+
 
 
 export { app, io };

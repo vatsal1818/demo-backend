@@ -1,5 +1,18 @@
 import mongoose from "mongoose";
 
+const fileSchema = new mongoose.Schema({
+    filename: String,
+    contentType: String,
+    data: Buffer,
+    uploadDate: {
+        type: Date,
+        default: Date.now
+    },
+    size: Number
+});
+
+export const File = mongoose.model('File', fileSchema);
+
 const courseContentSchema = new mongoose.Schema({
     title: {
         type: String,
@@ -15,7 +28,25 @@ const courseContentSchema = new mongoose.Schema({
     },
     videoUrl: {
         type: String
-    }
+    },
+    attachments: [{
+        fileName: {
+            type: String,
+            required: true
+        },
+        fileUrl: {
+            type: String,
+            required: true
+        },
+        fileType: {
+            type: String,
+            required: true
+        },
+        uploadedAt: {
+            type: Date,
+            default: Date.now
+        }
+    }]
 });
 
 const courseSchema = new mongoose.Schema(
@@ -30,6 +61,10 @@ const courseSchema = new mongoose.Schema(
             required: true,
             min: 0
         },
+        offerPrice: {
+            type: Number,
+            min: 0
+        },
         courseDescription: {
             type: String,
             trim: true
@@ -37,6 +72,10 @@ const courseSchema = new mongoose.Schema(
         courseThumbnailUrl: {
             type: String,
             default: ''
+        },
+        courseVideoUrl: {
+            type: String,
+            default: ""
         },
         expiryDate: {
             type: Date,
